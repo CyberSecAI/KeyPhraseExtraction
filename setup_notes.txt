@@ -1,0 +1,18 @@
+# Create virtual environment
+python3 -m venv env
+
+# Activate new environment
+source env/bin/activate
+which python3
+
+# list installed python dependencies/packages
+pip freeze > requirements.txt
+
+# Install python dependencies
+pip install -r requirements.txt
+
+#backup new files 
+cp -rv --update=none ./CVEs/keyphrases/ ./SOMEWHERE ; date
+
+#get counts of files
+ls ./CVEs/keyphrases | wc -l; ls ./tmp/error_logs | wc -l
