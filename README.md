@@ -1,29 +1,126 @@
-# Overview
+# CVE Keyphrase Extraction
+
+This project processes CVE (Common Vulnerabilities and Exposures) descriptions to extract structured keyphrases using a finetuned Large Language Model. It organizes the data into standardized JSON format and integrates with a larger CVE information database.
+
+## Prerequisites
+
+- Python 3.12+
+- Git
+- Access to Google AI Platform (for the Gemini model)
+- Required Python packages:
+  - pandas
+  - google-generativeai
+  - tqdm
+  - pytz
 
 ## Setup
-1. Git clone https://github.com/CyberSecAI/cve_info so that cve_info is at the same dir level as this repo
-2. Get list of CVEs to data_in/CVSSData.csv.gz (e.g. from https://github.com/CyberSecAI/nvd_cve_data/tree/main/data_out/CVSSData.csv.gz)
 
-## Running the Code
+1. Clone the related CVE info repository:
+```bash
+git clone https://github.com/CyberSecAI/cve_info
+```
+Ensure it's at the same directory level as this repository.
 
-1. keyphraseExtract.ipynb
-   1. Determines CVEs to be processed
-      1. Reads existing CVEs with extracted keyphrases "../cve_info" 
-      2. Reads a list of CVEs from ./data_in/CVSSData.csv.gz
-      3. Determines the difference to find what CVEs need keyphrases extracted
-   2. Extract Keyphrases
-      1. Writes CVE descriptions to CVEs/description/
-      2. Calls keyphraseExtraction model to extract the Keyphrases
-      3. Stores CVEs with extracted keyphrases to CVEs/keyphrases
-      4. Writes logs to tmp/cve_processing.log
-2. keyphraseExtract_check.ipynb
-   1. Performs checks for bad json, missing or extra fields, etc...
-      1. https://jsonlint.com/ can be used to manually check json format
-3. merge_jsons2all.ipynb
-   1. create the final json file from keyphrases and descriptions 
-4. move2cve_dir.py 
-   1. Moves files in "./CVEs/all" to "../cve_info" to a specific sub-dir
+2. Download the CVE dataset:
+- Get `CVSSData.csv.gz` from https://github.com/CyberSecAI/nvd_cve_data/tree/main/data_out/
+- Place it in the `data_in` directory
 
+3. Install required dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+## Project Structure
+
+```
+.
+├── CVEs/
+│   ├── description/    # Extracted CVE descriptions
+│   ├── keyphrases/    # Generated keyphrases
+│   ├── all/           # Merged JSON files
+│   └── invalid/       # Invalid JSON files
+├── tmp/               # Temporary files and logs
+└── notebooks/
+    ├── keyphraseExtract.ipynb
+    ├── keyphraseExtract_check.ipynb
+    └── merge_jsons2all.ipynb
+```
+
+## Workflow
+
+### 1. Keyphrase Extraction (keyphraseExtract.ipynb)
+- Identifies CVEs requiring keyphrase extraction by:
+  - Reading existing processed CVEs from `../cve_info`
+  - Comparing against CVEs in `CVSSData.csv.gz`
+  - Determining which CVEs need processing
+- Processes CVEs:
+  - Extracts descriptions to `CVEs/description/`
+  - Uses Gemini model to extract keyphrases
+  - Stores results in `CVEs/keyphrases/`
+- Generates detailed logs in `tmp/cve_processing.log`
+
+### 2. Quality Control (keyphraseExtract_check.ipynb)
+- Validates generated JSON files:
+  - Checks for proper JSON formatting
+  - Verifies required fields presence
+  - Identifies duplicate content
+  - Validates field consistency
+- Moves invalid files to `CVEs/invalid/`
+- Generates validation reports and error logs
+
+### 3. Data Consolidation (merge_jsons2all.ipynb)
+- Merges processed data into final JSON format:
+  - Combines descriptions and keyphrases
+  - Normalizes field names to camelCase
+  - Validates impact text consistency
+  - Adds metadata (version, timestamp)
+- Creates consolidated files in `CVEs/all/`
+
+### 4. Data Integration (move2cve_dir_hash.py)
+- Organizes processed files into the CVE info repository:
+  - Moves files from `CVEs/all` to appropriate subdirectories in `../cve_info`
+  - Uses SHA-256 hashing to prevent duplicates
+  - Maintains proper CVE directory structure
+  - Provides detailed operation logs
+
+## JSON Schema
+
+The final JSON output follows this structure:
+```json
+{
+    "cveId": "CVE-YYYY-XXXXX",
+    "version": "1.0.0",
+    "timestamp": "ISO-8601-timestamp",
+    "description": "CVE description text",
+    "keyphrases": {
+        "rootcause": "",
+        "weakness": "",
+        "impact": "",
+        "vector": "",
+        "attacker": "",
+        "product": "",
+        "version": "",
+        "component": ""
+    },
+    "mitreTechnicalImpacts": []
+}
+```
+
+## Error Handling
+
+The system includes comprehensive error handling:
+- Invalid JSON detection and isolation
+- Duplicate content detection using hash comparison
+- Impact text validation
+- Detailed error logging
+- Automated file organization and cleanup
+
+## Maintenance
+
+- Check `tmp/cve_processing.log` for processing errors
+- Review `impact_validation_errors.log` for impact text inconsistencies
+- Use https://jsonlint.com/ for manual JSON validation when needed
+- Monitor `CVEs/invalid/` for problematic files requiring attention
 # Notes
 
 ## CVE Schema root-cause tags
