@@ -64,8 +64,27 @@ Set your API key in `config.py` or as an environment variable.
 
 ## Usage
 
-### Basic Usage
+### Complete Processing Workflow
 
+Run the scripts in sequence for full processing:
+
+```bash
+# 1. Extract keyphrases from CVE descriptions
+python keyphraseExtract.py
+
+# 2. Check for quality issues and missing keyphrases
+python keyphraseExtract_check.py
+
+# 3. Merge descriptions and keyphrases into final format
+python merge_jsons2all.py
+
+# 4. Move processed files to CVE info repository
+python move2cve_dir_hash.py
+```
+
+### Individual Script Usage
+
+#### 1. Main Keyphrase Extraction
 ```bash
 # Run with default settings
 python keyphraseExtract.py
@@ -78,6 +97,36 @@ python keyphraseExtract.py --cve-info-dir /path/to/cve_info
 
 # Get help
 python keyphraseExtract.py --help
+```
+
+#### 2. Quality Control Check
+```bash
+# Check for missing keyphrases in CVE files
+python keyphraseExtract_check.py
+# Output: logs/missing_keyphrases.txt
+```
+
+#### 3. Data Consolidation
+```bash
+# Merge description and keyphrase files
+python merge_jsons2all.py
+# Input: CVEs/description/ and CVEs/keyphrases/
+# Output: CVEs/all/
+```
+
+#### 4. File Organization
+```bash
+# Move processed files to CVE info repository
+python move2cve_dir_hash.py
+# Input: CVEs/all/
+# Output: ../cve_info/ (organized by year/number)
+```
+
+### Utility Scripts
+
+```bash
+# Convert Jupyter notebooks to Python scripts (if needed)
+python notebook2python.py
 ```
 
 ### Configuration
@@ -110,54 +159,77 @@ FALLBACK_MODEL_CONFIG = {
 
 ```
 .
-├── keyphraseExtract.py          # Main processing script
-├── config.py                   # Model and API configuration
+├── keyphraseExtract.py          # Main keyphrase extraction script
+├── keyphraseExtract_check.py    # Quality control and validation
+├── merge_jsons2all.py           # Data consolidation script
+├── move2cve_dir_hash.py         # File organization and deduplication
+├── config.py                    # Model and API configuration
+├── notebook2python.py          # Utility to convert notebooks to scripts
 ├── requirements.txt             # Python dependencies
-├── CLAUDE.md                   # Development guidance
-├── README.md                   # This file
-├── .gitignore                  # Git ignore patterns
+├── CLAUDE.md                    # Development guidance
+├── README.md                    # This file
+├── .gitignore                   # Git ignore patterns
 │
-├── CVEs/                       # Processing outputs (gitignored)
-│   ├── description/           # Extracted CVE descriptions
-│   ├── keyphrases/           # AI-generated keyphrases
-│   ├── all/                  # Merged JSON files
-│   └── invalid/              # Failed validation files
+├── CVEs/                        # Processing outputs (gitignored)
+│   ├── description/            # Extracted CVE descriptions
+│   ├── keyphrases/            # AI-generated keyphrases
+│   ├── all/                   # Merged JSON files
+│   └── invalid/               # Failed validation files
 │
-├── logs/                      # Logging directory (gitignored)
-│   ├── cve_processing.log    # Main processing log
+├── logs/                       # Logging directory (gitignored)
+│   ├── cve_processing.log     # Main processing log
 │   ├── keyphrases_already.csv # Processing status
-│   └── error_logs/           # Individual error details
+│   ├── missing_keyphrases.txt  # Quality control output
+│   ├── impact_validation_errors.log # Validation errors
+│   └── error_logs/            # Individual error details
 │       └── CVE-YYYY-XXXXX_error.json
 │
-└── legacy_notebooks/          # Original Jupyter notebooks
-    ├── keyphraseExtract.ipynb
-    ├── keyphraseExtract_check.ipynb
-    └── merge_jsons2all.ipynb
+└── *.ipynb                     # Legacy Jupyter notebooks (if any)
 ```
 
 ## Processing Pipeline
 
-### 1. Data Loading and Preparation
-- Loads existing processed CVEs from `../cve_info`
-- Reads new CVE data with intelligent column detection
-- Filters out already processed CVEs
-- Cleans and normalizes descriptions
-- Saves individual description files
+The system follows a 4-stage Python script pipeline:
 
-### 2. AI Processing
-- **Primary**: Uses fine-tuned VertexAI model (if available)
-- **Fallback**: Uses standard Gemini model for failed cases
-- **Retry Logic**: Up to 3 attempts per CVE with exponential backoff
-- **Rate Limiting**: Handles API quotas and resource exhaustion
+### 1. Keyphrase Extraction (`keyphraseExtract.py`)
+- **Purpose**: Main AI processing script for extracting keyphrases from CVE descriptions
+- **Features**:
+  - Loads existing processed CVEs from `../cve_info`
+  - Reads new CVE data with intelligent column detection
+  - Filters out already processed CVEs
+  - Cleans and normalizes descriptions
+  - Uses fine-tuned VertexAI model with fallback to standard Gemini
+  - Implements retry logic with exponential backoff
+  - Saves extracted keyphrases to `CVEs/keyphrases/`
 
-### 3. Quality Control
-- JSON validation and parsing
-- Error isolation and detailed logging
-- Progress tracking and reporting
-- Duplicate detection and prevention
+### 2. Quality Control (`keyphraseExtract_check.py`)
+- **Purpose**: Validates generated JSON files and identifies missing keyphrases
+- **Features**:
+  - Searches for files missing keyphrases sections
+  - Validates JSON structure and required fields
+  - Generates reports of files needing processing
+  - Outputs results to `logs/missing_keyphrases.txt`
 
-### 4. Output Generation
-Generates structured JSON with extracted keyphrases:
+### 3. Data Consolidation (`merge_jsons2all.py`)
+- **Purpose**: Merges descriptions and keyphrases into final JSON format
+- **Features**:
+  - Combines data from `CVEs/description/` and `CVEs/keyphrases/`
+  - Normalizes field names to camelCase format
+  - Validates impact text consistency
+  - Adds metadata (version, timestamp)
+  - Creates consolidated files in `CVEs/all/`
+  - Generates validation error logs
+
+### 4. Data Integration (`move2cve_dir_hash.py`)
+- **Purpose**: Organizes processed files into the CVE info repository
+- **Features**:
+  - Moves files from `CVEs/all/` to appropriate subdirectories in `../cve_info`
+  - Uses SHA-256 hashing to prevent duplicates
+  - Maintains proper CVE directory structure by year and number range
+  - Provides detailed operation statistics
+
+### Output Format
+The final consolidated JSON follows this structure:
 
 ```json
 {
@@ -192,7 +264,7 @@ Generates structured JSON with extracted keyphrases:
 
 ### Log Content Examples
 
-**Main Log:**
+**Main Processing Log (`logs/cve_processing.log`):**
 ```
 2025-07-03 12:00:00,123 - INFO - Using new VertexAI API
 2025-07-03 12:00:01,456 - INFO - Loaded 5000 new CVEs for processing
@@ -200,7 +272,7 @@ Generates structured JSON with extracted keyphrases:
 2025-07-03 12:00:08,012 - ERROR - Error processing CVE-2024-5678: Invalid JSON
 ```
 
-**Error Detail:**
+**Individual Error Detail (`logs/error_logs/CVE-2024-5678_error.json`):**
 ```json
 {
     "cve": "CVE-2024-5678",
@@ -210,6 +282,19 @@ Generates structured JSON with extracted keyphrases:
     "description": "Buffer overflow in...",
     "raw_response": "malformed response..."
 }
+```
+
+**Quality Control Output (`logs/missing_keyphrases.txt`):**
+```
+../cve_info/2024/1xxx/CVE-2024-1234.json
+../cve_info/2024/1xxx/CVE-2024-1567.json
+../cve_info/2024/2xxx/CVE-2024-2345.json
+```
+
+**Validation Errors (`impact_validation_errors.log`):**
+```
+CVE-2024-3456: Impact text mismatch between description and keyphrases
+CVE-2024-4567: Missing required impact field
 ```
 
 ## Data Sources and Compatibility
@@ -260,11 +345,21 @@ The script automatically detects column names for:
 - **Type Hints**: Comprehensive type annotations
 - **Documentation**: Detailed docstrings and comments
 
+### Script Dependencies
+
+The scripts should be run in order as they depend on each other's outputs:
+
+1. `keyphraseExtract.py` → Creates `CVEs/keyphrases/`
+2. `keyphraseExtract_check.py` → Validates files, reports missing keyphrases
+3. `merge_jsons2all.py` → Reads from `CVEs/description/` and `CVEs/keyphrases/`, creates `CVEs/all/`
+4. `move2cve_dir_hash.py` → Reads from `CVEs/all/`, organizes into `../cve_info/`
+
 ### Testing and Validation
-- Column detection testing
-- Data loading verification
-- API integration testing
-- Error handling validation
+- Intelligent column detection for various data formats
+- Comprehensive error handling and logging
+- JSON validation and structure verification
+- Duplicate detection using SHA-256 hashing
+- Impact text consistency validation
 
 ## Troubleshooting
 
@@ -272,14 +367,17 @@ The script automatically detects column names for:
 
 1. **Column Detection Failures**
    ```bash
-   # Check available columns
+   # Check available columns in your data file
    python -c "import pandas as pd; print(pd.read_csv('path/to/data.csv', nrows=1).columns.tolist())"
    ```
 
-2. **API Authentication**
+2. **API Authentication Issues**
    ```bash
    # Verify VertexAI authentication
    gcloud auth application-default print-access-token
+   
+   # Check if credentials are properly configured
+   gcloud config list
    ```
 
 3. **Missing Dependencies**
@@ -288,10 +386,26 @@ The script automatically detects column names for:
    pip install -r requirements.txt --upgrade
    ```
 
+4. **Script Execution Order**
+   ```bash
+   # If merge_jsons2all.py reports "No CVEs with keyphrases files found"
+   # Make sure you've run keyphraseExtract.py first
+   python keyphraseExtract.py
+   ```
+
+5. **Missing Input Directories**
+   ```bash
+   # Create required directories if they don't exist
+   mkdir -p CVEs/description CVEs/keyphrases CVEs/all
+   ```
+
 ### Log Analysis
-- Check `logs/cve_processing.log` for processing status
-- Review `logs/error_logs/` for specific failure details
-- Monitor `failed_cves.txt` for patterns in failures
+- **Main processing**: Check `logs/cve_processing.log` for overall status
+- **Individual errors**: Review `logs/error_logs/` for specific CVE failures
+- **Quality issues**: Check `logs/missing_keyphrases.txt` for files needing processing
+- **Validation errors**: Review `impact_validation_errors.log` for data consistency issues
+- **Failed CVEs**: Monitor `failed_cves.txt` for patterns in processing failures
+- **Processing status**: Check `logs/keyphrases_already.csv` for previously processed CVEs
 
 ## Contributing
 
