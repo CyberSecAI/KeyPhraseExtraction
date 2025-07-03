@@ -364,6 +364,64 @@ class CVEProcessor:
         
         return cve_col, desc_col
     
+    def _save_cves_to_process_csv(self, df_to_process, df_all_cves, df_already):
+        """Save detailed information about CVEs to be processed to CSV file."""
+        os.makedirs('logs', exist_ok=True)
+        
+        # Create summary CSV with processing status
+        summary_data = []
+        
+        for _, row in df_all_cves.iterrows():
+            cve_id = row['CVE']
+            description = row['Description']
+            
+            # Determine processing status
+            if cve_id in df_already['CVE'].values:
+                status = 'already_processed'
+            elif cve_id in df_to_process['CVE'].values:
+                status = 'to_be_processed'
+            else:
+                status = 'filtered_out'
+            
+            # Add additional fields if available
+            additional_fields = {}
+            if 'state' in row:
+                additional_fields['state'] = row['state']
+            if 'rejected_reason' in row:
+                additional_fields['rejected_reason'] = row.get('rejected_reason', '')
+            
+            summary_data.append({
+                'cve_id': cve_id,
+                'description': description[:200] + '...' if len(str(description)) > 200 else description,
+                'description_length': len(str(description)) if pd.notna(description) else 0,
+                'processing_status': status,
+                **additional_fields
+            })
+        
+        # Save summary CSV
+        summary_df = pd.DataFrame(summary_data)
+        summary_path = 'logs/cve_processing_summary.csv'
+        summary_df.to_csv(summary_path, index=False)
+        logging.info(f"Saved CVE processing summary to {summary_path}")
+        
+        # Save list of CVEs to be processed (detailed)
+        if len(df_to_process) > 0:
+            to_process_path = 'logs/cves_to_process.csv'
+            df_to_process.to_csv(to_process_path, index=False)
+            logging.info(f"Saved {len(df_to_process)} CVEs to be processed to {to_process_path}")
+        
+        # Log summary statistics
+        total_cves = len(df_all_cves)
+        already_processed = len(df_already)
+        to_process = len(df_to_process)
+        filtered_out = total_cves - already_processed - to_process
+        
+        logging.info(f"CVE Processing Summary:")
+        logging.info(f"  Total CVEs in source: {total_cves}")
+        logging.info(f"  Already processed: {already_processed}")
+        logging.info(f"  To be processed: {to_process}")
+        logging.info(f"  Filtered out: {filtered_out}")
+    
     def load_and_prepare_data(self):
         """Load CVE data and prepare for processing."""
         logging.info("Loading existing CVE data...")
@@ -394,12 +452,35 @@ class CVEProcessor:
             
             logging.info(f"Detected columns - CVE ID: '{cve_col}', Description: '{desc_col}'")
             
-            # Now read the full file with only the needed columns
+            # Read columns we need: CVE ID, description, state, and rejected_reason
+            required_cols = [cve_col, desc_col]
+            additional_cols = []
+            
+            # Check if state and rejected_reason columns exist
+            if 'state' in sample_df.columns:
+                additional_cols.append('state')
+            if 'rejected_reason' in sample_df.columns:
+                additional_cols.append('rejected_reason')
+            
+            all_cols = required_cols + additional_cols
+            
             df_cve = pd.read_csv(
                 self.cve_data_path,
                 compression=compression,
-                usecols=[cve_col, desc_col]
+                usecols=all_cols
             )
+            
+            # Handle rejected CVEs - use rejected_reason as description if available
+            if 'rejected_reason' in df_cve.columns and 'state' in df_cve.columns:
+                # For rejected CVEs with empty descriptions, use rejected_reason
+                rejected_mask = (df_cve['state'] == 'REJECTED') & (df_cve[desc_col].fillna('').str.strip() == '')
+                df_cve.loc[rejected_mask, desc_col] = df_cve.loc[rejected_mask, 'rejected_reason']
+                
+                # Filter out rejected CVEs that still have no meaningful description
+                df_cve = df_cve[
+                    (df_cve['state'] != 'REJECTED') | 
+                    (df_cve[desc_col].fillna('').str.strip() != '')
+                ].reset_index(drop=True)
             
             # Rename columns to standard names
             df_cve = df_cve.rename(columns={cve_col: 'CVE', desc_col: 'Description'})
@@ -423,12 +504,44 @@ class CVEProcessor:
         
         # Remove already processed CVEs
         df_already = df_already.rename(columns={'cveId': 'CVE'})
-        df = df_cve[~df_cve['CVE'].isin(df_already['CVE'])].reset_index(drop=True)
+        logging.info(f"Filtering {len(df_cve)} CVEs against {len(df_already)} existing ones...")
+        
+        # Optimize filtering by converting to set first for better performance
+        existing_cves_set = set(df_already['CVE'].values)
+        logging.info(f"Created set of {len(existing_cves_set)} existing CVEs")
+        
+        # Use vectorized string operations for better performance
+        df = df_cve[~df_cve['CVE'].isin(existing_cves_set)].reset_index(drop=True)
+        logging.info(f"Filtering complete. Found {len(df)} new CVEs to process")
+        
+        # Save simple list of CVEs to be processed to CSV
+        if len(df) > 0:
+            os.makedirs('logs', exist_ok=True)
+            to_process_path = 'logs/cves_to_process.csv'
+            df.to_csv(to_process_path, index=False)
+            logging.info(f"Saved {len(df)} CVEs to be processed to {to_process_path}")
+        
+        # Log summary statistics
+        logging.info(f"Processing summary: {len(df_already)} already processed, {len(df)} new CVEs to process")
         
         # Clean descriptions
         logging.info("Cleaning descriptions...")
         df['Description'] = df['Description'].apply(self.clean_description)
         df['Description'] = df['Description'].apply(self.clean_linux_vulnerability_description)
+        
+        # Filter out CVEs with invalid descriptions
+        initial_count = len(df)
+        df = df[
+            (df['Description'].notna()) &
+            (df['Description'].str.strip() != '') &
+            (~df['Description'].str.contains('DO NOT USE THIS CANDIDATE NUMBER', case=False, na=False)) &
+            (~df['Description'].str.contains('ConsultIDs', case=False, na=False)) &
+            (~df['Description'].str.contains('Reason This candidate is a duplicate', case=False, na=False))
+        ].reset_index(drop=True)
+        
+        filtered_count = initial_count - len(df)
+        if filtered_count > 0:
+            logging.info(f"Filtered out {filtered_count} CVEs with invalid descriptions")
         
         # Save individual description files
         logging.info("Saving description files...")
@@ -536,7 +649,7 @@ def main():
     )
     parser.add_argument(
         "--cve-data-path", 
-        default="../cvelistV5_process/data_out/cve_records.csv",
+        default="../cvelistV5_process/data_out/cve_records_published.csv",
         help="Path to CVE data CSV file (default: ../cvelistV5_process/data_out/cve_records_published.csv)"
     )
     
