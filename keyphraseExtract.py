@@ -30,30 +30,16 @@ import pandas as pd
 from tqdm import tqdm
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Import both old and new Google AI APIs
-try:
-    from google import genai
-    from google.genai import types
-    NEW_API_AVAILABLE = True
-except ImportError:
-    NEW_API_AVAILABLE = False
-    import google.generativeai as genai
-    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+# Import new Google AI API only
+from google import genai
+from google.genai import types
+NEW_API_AVAILABLE = True
 
 # Import configuration
 from config import GOOGLE_CLOUD_CONFIG, MAIN_MODEL_CONFIG, FALLBACK_MODEL_CONFIG
 
 
-class KeyPhrases(typing.TypedDict):
-    """Response schema for old API compatibility."""
-    rootcause: list[str]
-    weakness: list[str]
-    impact: list[str]
-    vector: list[str]
-    attacker: list[str]
-    product: list[str]
-    version: list[str]
-    component: list[str]
+# KeyPhrases schema removed - not needed with new API
 
 
 class CVEProcessor:
@@ -74,8 +60,6 @@ class CVEProcessor:
         # Initialize models
         self.client = None
         self.config = None
-        self.model = None
-        self.model_fallback = None
         
         # Setup logging
         self._setup_logging()
@@ -96,32 +80,18 @@ class CVEProcessor:
         )
         
     def _initialize_models(self):
-        """Initialize AI models based on API availability."""
-        global NEW_API_AVAILABLE
-        
-        if NEW_API_AVAILABLE:
-            try:
-                # Use new VertexAI API
-                self.client = self._create_vertexai_client()
-                self.config = self._create_vertexai_config()
-                logging.info("Using new VertexAI API")
-            except Exception as e:
-                logging.warning(f"Failed to initialize VertexAI API: {e}")
-                logging.info("Falling back to old API")
-                NEW_API_AVAILABLE = False
-                self.model = self._create_old_api_model()
-        else:
-            self.model = self._create_old_api_model()
-            logging.info("Using legacy Google Generative AI API")
-
-        # Create fallback model (always using standard API)
-        self.model_fallback = self._create_old_api_fallback_model()
+        """Initialize AI models using the new Google AI API."""
+        try:
+            # Use new VertexAI API
+            self.client = self._create_vertexai_client()
+            self.config = self._create_vertexai_config()
+            logging.info("Using new VertexAI API")
+        except Exception as e:
+            logging.error(f"Failed to initialize VertexAI API: {e}")
+            raise
         
     def _create_vertexai_client(self):
         """Create and return a configured genai client for VertexAI."""
-        if not NEW_API_AVAILABLE:
-            raise ImportError("New Google AI API not available.")
-        
         return genai.Client(
             vertexai=True,
             project=GOOGLE_CLOUD_CONFIG["project"],
@@ -130,9 +100,6 @@ class CVEProcessor:
 
     def _create_vertexai_config(self):
         """Create generation configuration for VertexAI model."""
-        if not NEW_API_AVAILABLE:
-            raise ImportError("New Google AI API not available.")
-            
         safety_settings = [
             types.SafetySetting(
                 category=setting["category"],
@@ -148,52 +115,21 @@ class CVEProcessor:
             system_instruction=[types.Part.from_text(text=MAIN_MODEL_CONFIG["system_instruction"])],
         )
 
-    def _create_old_api_model(self):
-        """Create model using old Google Generative AI API."""
-        generation_config = {
-            "temperature": MAIN_MODEL_CONFIG["temperature"],
-            "top_p": MAIN_MODEL_CONFIG["top_p"],
-            "top_k": 40,
-            "max_output_tokens": MAIN_MODEL_CONFIG["max_output_tokens"],
-            "response_mime_type": "text/plain",
-            "response_schema": KeyPhrases,
-        }
-
-        safe = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    def _create_fallback_config(self):
+        """Create generation configuration for fallback model using new API."""
+        safety_settings = [
+            types.SafetySetting(
+                category=setting["category"],
+                threshold=setting["threshold"]
+            ) for setting in FALLBACK_MODEL_CONFIG["safety_settings"]
         ]
-
-        return genai.GenerativeModel(
-            model_name="tunedModels/keyphraseextractv010-8vfr4la1aubc",
-            generation_config=generation_config,
-            safety_settings=safe,    
-        )
-
-    def _create_old_api_fallback_model(self):
-        """Create fallback model using old Google Generative AI API."""
-        generation_config = {
-            "temperature": FALLBACK_MODEL_CONFIG["temperature"],
-            "top_p": FALLBACK_MODEL_CONFIG["top_p"],
-            "top_k": FALLBACK_MODEL_CONFIG["top_k"],
-            "max_output_tokens": FALLBACK_MODEL_CONFIG["max_output_tokens"],
-            "response_mime_type": FALLBACK_MODEL_CONFIG["response_mime_type"],
-        }
-
-        safe = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-
-        return genai.GenerativeModel(
-            model_name=FALLBACK_MODEL_CONFIG["model_name"],
-            generation_config=generation_config,
-            safety_settings=safe,    
+        
+        return types.GenerateContentConfig(
+            temperature=FALLBACK_MODEL_CONFIG["temperature"],
+            top_p=FALLBACK_MODEL_CONFIG["top_p"],
+            max_output_tokens=FALLBACK_MODEL_CONFIG["max_output_tokens"],
+            safety_settings=safety_settings,
+            system_instruction=[types.Part.from_text(text=FALLBACK_MODEL_CONFIG["system_instruction"])],
         )
 
     @staticmethod
@@ -295,29 +231,30 @@ class CVEProcessor:
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True
     )
-    def generate_and_parse_content(self, model, prompt, cve, use_new_api=False):
-        """Generate content and parse JSON with retries."""
-        global NEW_API_AVAILABLE
-        if use_new_api and NEW_API_AVAILABLE:
-            # Use new VertexAI API
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=prompt)]
-                )
-            ]
-            
-            response_text = ""
-            for chunk in self.client.models.generate_content_stream(
-                model=MAIN_MODEL_CONFIG["model_endpoint"],
-                contents=contents,
-                config=self.config,
-            ):
-                response_text += chunk.text
+    def generate_and_parse_content(self, prompt, cve, use_fallback=False):
+        """Generate content and parse JSON using new API only."""
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=prompt)]
+            )
+        ]
+        
+        # Choose model and config based on use_fallback
+        if use_fallback:
+            model_endpoint = FALLBACK_MODEL_CONFIG["model_name"]
+            config = self._create_fallback_config()
         else:
-            # Use old API
-            response = model.generate_content(prompt)
-            response_text = response.text
+            model_endpoint = MAIN_MODEL_CONFIG["model_endpoint"]
+            config = self.config
+        
+        response_text = ""
+        for chunk in self.client.models.generate_content_stream(
+            model=model_endpoint,
+            contents=contents,
+            config=config,
+        ):
+            response_text += chunk.text
         
         try:
             # Try to parse the JSON response
@@ -333,8 +270,8 @@ class CVEProcessor:
             cleaned_response = cleaned_response[:last_brace + 1]
             return json.loads(cleaned_response)
 
-    def process_cve(self, row, model, use_new_api=False):
-        """Process a single CVE with error handling."""
+    def process_cve(self, row, use_fallback=False):
+        """Process a single CVE with error handling using new API only."""
         cve = row['CVE']
         description = row['Description']
         output_filename = f"{cve}_keyphrases.json"
@@ -354,14 +291,15 @@ class CVEProcessor:
             prompt = "<INSTRUCTION>Only use these json fields:rootcause, weakness, impact, vector, attacker, product, version, component</INSTRUCTION>" + description
             
             # Generate and parse content with retries
-            parsed_json = self.generate_and_parse_content(model, prompt, cve, use_new_api)
+            parsed_json = self.generate_and_parse_content(prompt, cve, use_fallback)
             
             # Save the response to the output file
             with open(output_path, 'w') as f:
                 json.dump(parsed_json, f, indent=4)
                 f.write('\n')
             
-            logging.info(f"Processed {cve} and saved results to {output_filename} (API: {'new' if use_new_api else 'old'})")
+            model_type = "fallback" if use_fallback else "primary"
+            logging.info(f"Processed {cve} and saved results to {output_filename} (API: new, model: {model_type})")
             return True
         
         except Exception as e:
@@ -373,7 +311,8 @@ class CVEProcessor:
                 "error": str(e),
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "description": description,
-                "api_used": "new" if use_new_api else "old",
+                "api_used": "new",
+                "model_type": "fallback" if use_fallback else "primary",
                 "raw_response": getattr(e, 'response', {}).get('text', None) if hasattr(e, 'response') else None
             }
             
@@ -506,33 +445,36 @@ class CVEProcessor:
         return df
 
     def process_all_cves(self, df):
-        """Process all CVEs in the dataframe."""
+        """Process all CVEs in the dataframe using new API only."""
         failed_cves = []
         successful = 0
         total = len(df)
         fallback_attempts = 0
-        new_api_attempts = 0
+        primary_attempts = 0
 
         logging.info(f"Starting processing of {total} CVEs...")
 
         for index, row in df.iterrows():
-            primary_attempts = 0
-            max_primary_attempts = 3
-            primary_success = False
+            attempts = 0
+            max_attempts = 3
+            cve_success = False
             
-            # Try primary model with new API first if available, then old API
-            while primary_attempts < max_primary_attempts:
+            # Try primary model first, then fallback if needed
+            while attempts < max_attempts and not cve_success:
                 try:
-                    use_new_api = NEW_API_AVAILABLE and primary_attempts == 0
-                    if self.process_cve(row, self.model, use_new_api):
+                    use_fallback = attempts > 0  # Use fallback after first attempt fails
+                    if self.process_cve(row, use_fallback):
                         successful += 1
-                        primary_success = True
-                        if use_new_api:
-                            new_api_attempts += 1
+                        cve_success = True
+                        if use_fallback:
+                            fallback_attempts += 1
+                        else:
+                            primary_attempts += 1
                         break
-                    primary_attempts += 1
-                    if primary_attempts < max_primary_attempts:
-                        logging.info(f"Retrying primary model for CVE: {row['CVE']} (attempt {primary_attempts + 1})")
+                    attempts += 1
+                    if attempts < max_attempts:
+                        model_type = "fallback" if use_fallback else "primary"
+                        logging.info(f"Retrying CVE {row['CVE']} with {'fallback' if attempts > 0 else 'primary'} model (attempt {attempts + 1})")
                         continue
                         
                 except Exception as e:
@@ -541,28 +483,20 @@ class CVEProcessor:
                         logging.warning("Resource exhaustion detected. Sleeping for 1 hour...")
                         time.sleep(3600)
                         continue
-                    primary_attempts += 1
-                    if primary_attempts < max_primary_attempts:
-                        logging.error(f"Primary model error (attempt {primary_attempts}): {error_str}")
+                    attempts += 1
+                    if attempts < max_attempts:
+                        model_type = "fallback" if use_fallback else "primary"
+                        logging.error(f"{model_type.title()} model error (attempt {attempts}): {error_str}")
                         continue
             
-            # Try fallback model if primary model failed all attempts
-            if not primary_success:
-                try:
-                    if self.process_cve(row, self.model_fallback, False):  # Always use old API for fallback
-                        successful += 1
-                        fallback_attempts += 1
-                        logging.info(f"Fallback model succeeded for CVE: {row['CVE']}")
-                    else:
-                        failed_cves.append(row['CVE'])
-                        logging.warning(f"Both models failed for CVE: {row['CVE']}")
-                except Exception as fallback_error:
-                    failed_cves.append(row['CVE'])
-                    logging.error(f"Fallback model error for CVE {row['CVE']}: {str(fallback_error)}")
+            # If all attempts failed
+            if not cve_success:
+                failed_cves.append(row['CVE'])
+                logging.error(f"All attempts failed for CVE: {row['CVE']}")
             
             # Log progress every 10 CVEs
             if (index + 1) % 10 == 0:
-                logging.info(f"Progress: {index + 1}/{total} CVEs processed ({successful} successful, {new_api_attempts} via new API, {fallback_attempts} via fallback)")
+                logging.info(f"Progress: {index + 1}/{total} CVEs processed ({successful} successful, {primary_attempts} via primary, {fallback_attempts} via fallback)")
 
         # Save failed CVEs
         if failed_cves:
@@ -571,7 +505,7 @@ class CVEProcessor:
                     f.write(f"{cve}\n")
             logging.info(f"Saved {len(failed_cves)} failed CVEs to failed_cves.txt")
 
-        logging.info(f"Processing complete. Successful: {successful}/{total} ({new_api_attempts} via new API, {fallback_attempts} via fallback)")
+        logging.info(f"Processing complete. Successful: {successful}/{total} ({primary_attempts} via primary, {fallback_attempts} via fallback)")
         return successful, failed_cves
 
     def run(self):
