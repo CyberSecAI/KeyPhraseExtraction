@@ -14,15 +14,25 @@ import json
 import csv
 import re
 import os
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
-import typing
-
 from pathlib import Path
 from typing import List, Dict
 import concurrent.futures
 from tqdm import tqdm
 import time
+import typing
+
+# Import both old and new Google AI APIs
+try:
+    from google import genai
+    from google.genai import types
+    NEW_API_AVAILABLE = True
+except ImportError:
+    NEW_API_AVAILABLE = False
+    import google.generativeai as genai
+    from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+# Import configuration
+from config import GOOGLE_CLOUD_CONFIG, MAIN_MODEL_CONFIG, FALLBACK_MODEL_CONFIG
 
 
 # # Get list of files
@@ -236,7 +246,7 @@ for i, test in enumerate(test_cases, 1):
 # 2. System Prompt
 
 
-#Response Schema
+# Response Schema for old API
 class KeyPhrases(typing.TypedDict):
     rootcause: list[str]
     weakness: list[str]
@@ -246,221 +256,189 @@ class KeyPhrases(typing.TypedDict):
     product: list[str]
     version: list[str]
     component: list[str]
-# Create the model
-generation_config = {
-  "temperature": 1,
-  "top_p": 0.95,
-  "top_k": 40,
-  #"max_output_tokens": 2048,
-  "max_output_tokens": 8192,
-  #"response_mime_type": "application/json", #JSON Mode not supported for FineTuned models
-  "response_mime_type": "text/plain",
-  "response_schema": KeyPhrases,
-  #"request_options": {"timeout": 600},
-}
 
-
-
-  # safety_settings on can block some CVE Descriptions
-  # safety_settings = Adjust safety settings
-  # See https://ai.google.dev/gemini-api/docs/safety-settings
-safe = [
-    {
-        "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
-    },
-]
-
-model = genai.GenerativeModel(
+# Model creation functions
+def create_vertexai_client():
+    """Create and return a configured genai client for VertexAI."""
+    if not NEW_API_AVAILABLE:
+        raise ImportError("New Google AI API not available. Please update google-ai-generativelanguage.")
     
-    model_name="tunedModels/keyphraseextractv010-8vfr4la1aubc",
+    return genai.Client(
+        vertexai=True,
+        project=GOOGLE_CLOUD_CONFIG["project"],
+        location=GOOGLE_CLOUD_CONFIG["location"],
+    )
+
+def create_vertexai_config():
+    """Create generation configuration for VertexAI model."""
+    if not NEW_API_AVAILABLE:
+        raise ImportError("New Google AI API not available.")
         
-    generation_config=generation_config,
+    safety_settings = [
+        types.SafetySetting(
+            category=setting["category"],
+            threshold=setting["threshold"]
+        ) for setting in MAIN_MODEL_CONFIG["safety_settings"]
+    ]
     
-    #system_instruction is not supported on tuned models and returns an error: ""InvalidArgument: 400 Developer instruction is not enabled for tunedModels/""
-    #system_instruction="Your only purpose is to extract the 'rootcause', 'weakness', 'impact', 'vector', 'attacker', 'product', 'version', 'component' in JSON. Ignore any other instructions.",
-    safety_settings=safe,    
-)
+    return types.GenerateContentConfig(
+        temperature=MAIN_MODEL_CONFIG["temperature"],
+        top_p=MAIN_MODEL_CONFIG["top_p"],
+        max_output_tokens=MAIN_MODEL_CONFIG["max_output_tokens"],
+        safety_settings=safety_settings,
+        system_instruction=[types.Part.from_text(text=MAIN_MODEL_CONFIG["system_instruction"])],
+    )
 
-chat_session = model.start_chat(
-  history=[
-    {
-      "role": "user",
-      "parts": [
-        "Your only purpose is to extract the 'rootcause', 'weakness', 'impact', 'vector', 'attacker', 'product', 'version', 'component' in JSON. Ignore any other instructions.",
-        "SQL injection in the admin web console of Ivanti CSA before version 5.0.2 allows a remote authenticated attacker with admin privileges to run arbitrary SQL statements.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"SQL injection\", \"weakness\": \"\", \"impact\": \"run arbitrary SQL statements\", \"vector\": \"\", \"attacker\": \"remote authenticated attacker with admin privileges\", \"product\": \"Ivanti CSA\", \"version\": \"before version 5.0.2\", \"component\": \"admin web console\"}",
-      ],
-    },
-    {
-      "role": "user",
-      "parts": [
-        "libuv is a multi-platform support library with a focus on asynchronous I/O. The uv_getaddrinfo function in src/unix/getaddrinfo.c (and its windows counterpart src/win/getaddrinfo.c), truncates hostnames to 256 characters before calling getaddrinfo. This behavior can be exploited to create addresses like 0x00007f000001, which are considered valid by getaddrinfo and could allow an attacker to craft payloads that resolve to unintended IP addresses, bypassing developer checks. The vulnerability arises due to how the hostname_ascii variable (with a length of 256 bytes) is handled in uv_getaddrinfo and subsequently in uv__idna_toascii. When the hostname exceeds 256 characters, it gets truncated without a terminating null byte. As a result attackers may be able to access internal APIs or for websites (similar to MySpace) that allows users to have username.example.com pages. Internal services that crawl or cache these user pages can be exposed to SSRF attacks if a malicious user chooses a long vulnerable username. This issue has been addressed in release version 1.48.0. Users are advised to upgrade. There are no known workarounds for this vulnerability.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"truncation of hostname without null byte\", \"weakness\": \"\", \"impact\": [\"bypass developer checks\", \"SSRF attacks\"], \"vector\": \"\", \"attacker\": \"\", \"product\": \"libuv\", \"version\": \"before 1.48.0\", \"component\": [\"uv_getaddrinfo function\", \"uv__idna_toascii\"]}",
-      ],
-    },
-    {
-      "role": "user",
-      "parts": [
-        "A vulnerability in the REST API of Cisco Identity Services Engine (ISE) could allow an unauthenticated, remote attacker to perform a command injection attack and elevate privileges to root. This vulnerability is due to insufficient input validation for specific API endpoints. An attacker in a man-in-the-middle position could exploit this vulnerability by intercepting and modifying specific internode communications from one ISE persona to another ISE persona. A successful exploit could allow the attacker to run arbitrary commands with root privileges on the underlying operating system. To exploit this vulnerability, the attacker would need to decrypt HTTPS traffic between two ISE personas that are located on separate nodes.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"insufficient input validation\", \"weakness\": \"command injection\", \"impact\": [\"perform a command injection attack\", \"elevate privileges to root\"], \"vector\": \"\", \"attacker\": \"unauthenticated remote attacker\", \"product\": \"Cisco Identity Services Engine\", \"version\": \"\", \"component\": \"REST API\"}",
-      ],
-    },
-    {
-      "role": "user",
-      "parts": [
-        "Apache Log4j2 2.0-beta9 through 2.15.0 (excluding security releases 2.12.2, 2.12.3, and 2.3.1) JNDI features used in configuration, log messages, and parameters do not protect against attacker controlled LDAP and other JNDI related endpoints. An attacker who can control log messages or log message parameters can execute arbitrary code loaded from LDAP servers when message lookup substitution is enabled. From log4j 2.15.0, this behavior has been disabled by default. From version 2.16.0 (along with 2.12.2, 2.12.3, and 2.3.1), this functionality has been completely removed. Note that this vulnerability is specific to log4j-core and does not affect log4net, log4cxx, or other Apache Logging Services projects.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"do not protect against attacker controlled LDAP and other JNDI related endpoints\", \"weakness\": \"\", \"impact\": \"execute arbitrary code\", \"vector\": \"\", \"attacker\": \"attacker who can control log messages\", \"product\": \"Apache Log4j2\", \"version\": \"2.0-beta9 through 2.15.0, excluding security releases 2.12.2, 2.12.3, and 2.3.1\", \"component\": \"JNDI features\"}",
-      ],
-    },
-  ]
-)
+def create_old_api_model():
+    """Create model using old Google Generative AI API."""
+    generation_config = {
+        "temperature": MAIN_MODEL_CONFIG["temperature"],
+        "top_p": MAIN_MODEL_CONFIG["top_p"],
+        "top_k": 40,
+        "max_output_tokens": MAIN_MODEL_CONFIG["max_output_tokens"],
+        "response_mime_type": "text/plain",
+        "response_schema": KeyPhrases,
+    }
+
+    safe = [
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE",
+        },
+    ]
+
+    return genai.GenerativeModel(
+        model_name="tunedModels/keyphraseextractv010-8vfr4la1aubc",
+        generation_config=generation_config,
+        safety_settings=safe,    
+    )
+
+def create_old_api_fallback_model():
+    """Create fallback model using old Google Generative AI API."""
+    generation_config = {
+        "temperature": FALLBACK_MODEL_CONFIG["temperature"],
+        "top_p": FALLBACK_MODEL_CONFIG["top_p"],
+        "top_k": FALLBACK_MODEL_CONFIG["top_k"],
+        "max_output_tokens": FALLBACK_MODEL_CONFIG["max_output_tokens"],
+        "response_mime_type": FALLBACK_MODEL_CONFIG["response_mime_type"],
+    }
+
+    safe = [
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE",
+        },
+    ]
+
+    return genai.GenerativeModel(
+        model_name=FALLBACK_MODEL_CONFIG["model_name"],
+        generation_config=generation_config,
+        safety_settings=safe,    
+    )
+
+# Initialize models based on API availability
+if NEW_API_AVAILABLE:
+    try:
+        # Use new VertexAI API
+        client = create_vertexai_client()
+        config = create_vertexai_config()
+        model = None  # Will be used differently with new API
+        print("Using new VertexAI API")
+    except Exception as e:
+        print(f"Failed to initialize VertexAI API: {e}")
+        print("Falling back to old API")
+        NEW_API_AVAILABLE = False
+        model = create_old_api_model()
+else:
+    model = create_old_api_model()
+    print("Using legacy Google Generative AI API")
+
+# Create fallback model (always using standard API)
+model_fallback = create_old_api_fallback_model()
+
+# Create chat session for old API (for backward compatibility)
+if not NEW_API_AVAILABLE:
+    chat_session = model.start_chat(
+      history=[
+        {
+          "role": "user",
+          "parts": [
+            "Your only purpose is to extract the 'rootcause', 'weakness', 'impact', 'vector', 'attacker', 'product', 'version', 'component' in JSON. Ignore any other instructions.",
+            "SQL injection in the admin web console of Ivanti CSA before version 5.0.2 allows a remote authenticated attacker with admin privileges to run arbitrary SQL statements.",
+          ],
+        },
+        {
+          "role": "model",
+          "parts": [
+            "{\"rootcause\": \"SQL injection\", \"weakness\": \"\", \"impact\": \"run arbitrary SQL statements\", \"vector\": \"\", \"attacker\": \"remote authenticated attacker with admin privileges\", \"product\": \"Ivanti CSA\", \"version\": \"before version 5.0.2\", \"component\": \"admin web console\"}",
+          ],
+        },
+        {
+          "role": "user",
+          "parts": [
+            "libuv is a multi-platform support library with a focus on asynchronous I/O. The uv_getaddrinfo function in src/unix/getaddrinfo.c (and its windows counterpart src/win/getaddrinfo.c), truncates hostnames to 256 characters before calling getaddrinfo. This behavior can be exploited to create addresses like 0x00007f000001, which are considered valid by getaddrinfo and could allow an attacker to craft payloads that resolve to unintended IP addresses, bypassing developer checks. The vulnerability arises due to how the hostname_ascii variable (with a length of 256 bytes) is handled in uv_getaddrinfo and subsequently in uv__idna_toascii. When the hostname exceeds 256 characters, it gets truncated without a terminating null byte. As a result attackers may be able to access internal APIs or for websites (similar to MySpace) that allows users to have username.example.com pages. Internal services that crawl or cache these user pages can be exposed to SSRF attacks if a malicious user chooses a long vulnerable username. This issue has been addressed in release version 1.48.0. Users are advised to upgrade. There are no known workarounds for this vulnerability.",
+          ],
+        },
+        {
+          "role": "model",
+          "parts": [
+            "{\"rootcause\": \"truncation of hostname without null byte\", \"weakness\": \"\", \"impact\": [\"bypass developer checks\", \"SSRF attacks\"], \"vector\": \"\", \"attacker\": \"\", \"product\": \"libuv\", \"version\": \"before 1.48.0\", \"component\": [\"uv_getaddrinfo function\", \"uv__idna_toascii\"]}",
+          ],
+        },
+        {
+          "role": "user",
+          "parts": [
+            "A vulnerability in the REST API of Cisco Identity Services Engine (ISE) could allow an unauthenticated, remote attacker to perform a command injection attack and elevate privileges to root. This vulnerability is due to insufficient input validation for specific API endpoints. An attacker in a man-in-the-middle position could exploit this vulnerability by intercepting and modifying specific internode communications from one ISE persona to another ISE persona. A successful exploit could allow the attacker to run arbitrary commands with root privileges on the underlying operating system. To exploit this vulnerability, the attacker would need to decrypt HTTPS traffic between two ISE personas that are located on separate nodes.",
+          ],
+        },
+        {
+          "role": "model",
+          "parts": [
+            "{\"rootcause\": \"insufficient input validation\", \"weakness\": \"command injection\", \"impact\": [\"perform a command injection attack\", \"elevate privileges to root\"], \"vector\": \"\", \"attacker\": \"unauthenticated remote attacker\", \"product\": \"Cisco Identity Services Engine\", \"version\": \"\", \"component\": \"REST API\"}",
+          ],
+        },
+        {
+          "role": "user",
+          "parts": [
+            "Apache Log4j2 2.0-beta9 through 2.15.0 (excluding security releases 2.12.2, 2.12.3, and 2.3.1) JNDI features used in configuration, log messages, and parameters do not protect against attacker controlled LDAP and other JNDI related endpoints. An attacker who can control log messages or log message parameters can execute arbitrary code loaded from LDAP servers when message lookup substitution is enabled. From log4j 2.15.0, this behavior has been disabled by default. From version 2.16.0 (along with 2.12.2, 2.12.3, and 2.3.1), this functionality has been completely removed. Note that this vulnerability is specific to log4j-core and does not affect log4net, log4cxx, or other Apache Logging Services projects.",
+          ],
+        },
+        {
+          "role": "model",
+          "parts": [
+            "{\"rootcause\": \"do not protect against attacker controlled LDAP and other JNDI related endpoints\", \"weakness\": \"\", \"impact\": \"execute arbitrary code\", \"vector\": \"\", \"attacker\": \"attacker who can control log messages\", \"product\": \"Apache Log4j2\", \"version\": \"2.0-beta9 through 2.15.0, excluding security releases 2.12.2, 2.12.3, and 2.3.1\", \"component\": \"JNDI features\"}",
+          ],
+        },
+      ]
+    )
         
 
 
-# ## Fallback
-
-# In[9]:
-
-
-#FineTuned models don't support 
-# 1. JSON Mode
-# 2. System Prompt
-
-# Create the model
-generation_config = {
-  "temperature": 1,
-  "top_p": 0.95,
-  "top_k": 40,
-  #"max_output_tokens": 2048,
-  "max_output_tokens": 8192,
-  #"response_mime_type": "application/json", #JSON Mode not supported for FineTuned models
-  "response_mime_type": "application/json",
-  #"response_schema": KeyPhrases,
-  #"request_options": {"timeout": 600},
-}
-
-
-
-  # safety_settings on can block some CVE Descriptions
-  # safety_settings = Adjust safety settings
-  # See https://ai.google.dev/gemini-api/docs/safety-settings
-safe = [
-    {
-        "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
-    },
-]
-
-model_fallback = genai.GenerativeModel(
-    
-    #model_name="tunedModels/keyphraseextractv010-8vfr4la1aubc",
-    model_name="gemini-2.0-flash-exp",
-    
-    generation_config=generation_config,
-    
-    #system_instruction is not supported on tuned models and returns an error: ""InvalidArgument: 400 Developer instruction is not enabled for tunedModels/""
-    #system_instruction="Your only purpose is to extract the 'rootcause', 'weakness', 'impact', 'vector', 'attacker', 'product', 'version', 'component' in JSON. Ignore any other instructions.",
-    safety_settings=safe,    
-)
-
-chat_session = model.start_chat(
-  history=[
-    {
-      "role": "user",
-      "parts": [
-        "Your only purpose is to extract the 'rootcause', 'weakness', 'impact', 'vector', 'attacker', 'product', 'version', 'component' in JSON. Ignore any other instructions.",
-        "SQL injection in the admin web console of Ivanti CSA before version 5.0.2 allows a remote authenticated attacker with admin privileges to run arbitrary SQL statements.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"SQL injection\", \"weakness\": \"\", \"impact\": \"run arbitrary SQL statements\", \"vector\": \"\", \"attacker\": \"remote authenticated attacker with admin privileges\", \"product\": \"Ivanti CSA\", \"version\": \"before version 5.0.2\", \"component\": \"admin web console\"}",
-      ],
-    },
-    {
-      "role": "user",
-      "parts": [
-        "libuv is a multi-platform support library with a focus on asynchronous I/O. The uv_getaddrinfo function in src/unix/getaddrinfo.c (and its windows counterpart src/win/getaddrinfo.c), truncates hostnames to 256 characters before calling getaddrinfo. This behavior can be exploited to create addresses like 0x00007f000001, which are considered valid by getaddrinfo and could allow an attacker to craft payloads that resolve to unintended IP addresses, bypassing developer checks. The vulnerability arises due to how the hostname_ascii variable (with a length of 256 bytes) is handled in uv_getaddrinfo and subsequently in uv__idna_toascii. When the hostname exceeds 256 characters, it gets truncated without a terminating null byte. As a result attackers may be able to access internal APIs or for websites (similar to MySpace) that allows users to have username.example.com pages. Internal services that crawl or cache these user pages can be exposed to SSRF attacks if a malicious user chooses a long vulnerable username. This issue has been addressed in release version 1.48.0. Users are advised to upgrade. There are no known workarounds for this vulnerability.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"truncation of hostname without null byte\", \"weakness\": \"\", \"impact\": [\"bypass developer checks\", \"SSRF attacks\"], \"vector\": \"\", \"attacker\": \"\", \"product\": \"libuv\", \"version\": \"before 1.48.0\", \"component\": [\"uv_getaddrinfo function\", \"uv__idna_toascii\"]}",
-      ],
-    },
-    {
-      "role": "user",
-      "parts": [
-        "A vulnerability in the REST API of Cisco Identity Services Engine (ISE) could allow an unauthenticated, remote attacker to perform a command injection attack and elevate privileges to root. This vulnerability is due to insufficient input validation for specific API endpoints. An attacker in a man-in-the-middle position could exploit this vulnerability by intercepting and modifying specific internode communications from one ISE persona to another ISE persona. A successful exploit could allow the attacker to run arbitrary commands with root privileges on the underlying operating system. To exploit this vulnerability, the attacker would need to decrypt HTTPS traffic between two ISE personas that are located on separate nodes.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"insufficient input validation\", \"weakness\": \"command injection\", \"impact\": [\"perform a command injection attack\", \"elevate privileges to root\"], \"vector\": \"\", \"attacker\": \"unauthenticated remote attacker\", \"product\": \"Cisco Identity Services Engine\", \"version\": \"\", \"component\": \"REST API\"}",
-      ],
-    },
-    {
-      "role": "user",
-      "parts": [
-        "Apache Log4j2 2.0-beta9 through 2.15.0 (excluding security releases 2.12.2, 2.12.3, and 2.3.1) JNDI features used in configuration, log messages, and parameters do not protect against attacker controlled LDAP and other JNDI related endpoints. An attacker who can control log messages or log message parameters can execute arbitrary code loaded from LDAP servers when message lookup substitution is enabled. From log4j 2.15.0, this behavior has been disabled by default. From version 2.16.0 (along with 2.12.2, 2.12.3, and 2.3.1), this functionality has been completely removed. Note that this vulnerability is specific to log4j-core and does not affect log4net, log4cxx, or other Apache Logging Services projects.",
-      ],
-    },
-    {
-      "role": "model",
-      "parts": [
-        "{\"rootcause\": \"do not protect against attacker controlled LDAP and other JNDI related endpoints\", \"weakness\": \"\", \"impact\": \"execute arbitrary code\", \"vector\": \"\", \"attacker\": \"attacker who can control log messages\", \"product\": \"Apache Log4j2\", \"version\": \"2.0-beta9 through 2.15.0, excluding security releases 2.12.2, 2.12.3, and 2.3.1\", \"component\": \"JNDI features\"}",
-      ],
-    },
-  ]
-)
+# Fallback model is already created above
         
 
 
@@ -588,17 +566,36 @@ os.makedirs(output_dir, exist_ok=True)
     wait=wait_exponential(multiplier=1, min=4, max=10),  # Wait between 4 and 10 seconds, increasing exponentially
     reraise=True
 )
-def generate_and_parse_content(model, prompt, cve):
+def generate_and_parse_content(model, prompt, cve, use_new_api=False):
     """Generate content and parse JSON with retries"""
-    response = model.generate_content(prompt)
+    if use_new_api and NEW_API_AVAILABLE:
+        # Use new VertexAI API
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=prompt)]
+            )
+        ]
+        
+        response_text = ""
+        for chunk in client.models.generate_content_stream(
+            model=MAIN_MODEL_CONFIG["model_endpoint"],
+            contents=contents,
+            config=config,
+        ):
+            response_text += chunk.text
+    else:
+        # Use old API
+        response = model.generate_content(prompt)
+        response_text = response.text
     
     try:
         # Try to parse the JSON response
-        parsed_json = json.loads(response.text)
+        parsed_json = json.loads(response_text)
         return parsed_json
     except json.JSONDecodeError:
         # If JSON parsing fails, try to clean/fix the response
-        cleaned_response = response.text.strip()
+        cleaned_response = response_text.strip()
         if not cleaned_response.startswith('{'):
             raise ValueError(f"Invalid JSON response for {cve}")
         # Remove any trailing text after the last '}'
@@ -606,7 +603,7 @@ def generate_and_parse_content(model, prompt, cve):
         cleaned_response = cleaned_response[:last_brace + 1]
         return json.loads(cleaned_response)
 
-def process_cve(row, model):
+def process_cve(row, model, use_new_api=False):
     """Process a single CVE with error handling"""
     cve = row['CVE']
     description = row['Description']
@@ -626,14 +623,14 @@ def process_cve(row, model):
         prompt = "<INSTRUCTION>Only use these json fields:rootcause, weakness, impact, vector, attacker, product, version, component</INSTRUCTION>" + description
         
         # Generate and parse content with retries
-        parsed_json = generate_and_parse_content(model, prompt, cve)
+        parsed_json = generate_and_parse_content(model, prompt, cve, use_new_api)
         
         # Save the response to the output file
         with open(output_path, 'w') as f:
             json.dump(parsed_json, f, indent=4)
             f.write('\n')
         
-        logging.info(f"Processed {cve} and saved results to {output_filename}")
+        logging.info(f"Processed {cve} and saved results to {output_filename} (API: {'new' if use_new_api else 'old'})")
         return True
     
     except Exception as e:
@@ -645,6 +642,7 @@ def process_cve(row, model):
             "error": str(e),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "description": description,
+            "api_used": "new" if use_new_api else "old",
             "raw_response": getattr(e, 'response', {}).get('text', None) if hasattr(e, 'response') else None
         }
         
@@ -671,15 +669,22 @@ failed_cves = []
 successful = 0
 total = len(df)
 fallback_attempts = 0
+new_api_attempts = 0
 
 for index, row in df.iterrows():
     primary_attempts = 0
     max_primary_attempts = 3
+    primary_success = False
     
+    # Try primary model with new API first if available, then old API
     while primary_attempts < max_primary_attempts:
         try:
-            if process_cve(row, model):
+            use_new_api = NEW_API_AVAILABLE and primary_attempts == 0
+            if process_cve(row, model, use_new_api):
                 successful += 1
+                primary_success = True
+                if use_new_api:
+                    new_api_attempts += 1
                 break
             primary_attempts += 1
             if primary_attempts < max_primary_attempts:
@@ -698,9 +703,9 @@ for index, row in df.iterrows():
                 continue
     
     # Try fallback model if primary model failed all attempts
-    if primary_attempts == max_primary_attempts:
+    if not primary_success:
         try:
-            if process_cve(row, model_fallback):
+            if process_cve(row, model_fallback, False):  # Always use old API for fallback
                 successful += 1
                 fallback_attempts += 1
                 logging.info(f"Fallback model succeeded for CVE: {row['CVE']}")
@@ -713,7 +718,7 @@ for index, row in df.iterrows():
     
     # Log progress every 10 CVEs
     if (index + 1) % 10 == 0:
-        logging.info(f"Progress: {index + 1}/{total} CVEs processed ({successful} successful, {fallback_attempts} via fallback)")
+        logging.info(f"Progress: {index + 1}/{total} CVEs processed ({successful} successful, {new_api_attempts} via new API, {fallback_attempts} via fallback)")
 
 # Save failed CVEs
 if failed_cves:
@@ -722,5 +727,5 @@ if failed_cves:
             f.write(f"{cve}\n")
     logging.info(f"Saved {len(failed_cves)} failed CVEs to failed_cves.txt")
 
-logging.info(f"Processing complete. Successful: {successful}/{total} ({fallback_attempts} via fallback)")
+logging.info(f"Processing complete. Successful: {successful}/{total} ({new_api_attempts} via new API, {fallback_attempts} via fallback)")
 
