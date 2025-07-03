@@ -85,18 +85,20 @@ class CVEProcessor:
         
     def _setup_logging(self):
         """Setup logging configuration."""
-        os.makedirs('tmp', exist_ok=True)
+        os.makedirs('logs', exist_ok=True)
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler('tmp/cve_processing.log'),
+                logging.FileHandler('logs/cve_processing.log'),
                 logging.StreamHandler()
             ]
         )
         
     def _initialize_models(self):
         """Initialize AI models based on API availability."""
+        global NEW_API_AVAILABLE
+        
         if NEW_API_AVAILABLE:
             try:
                 # Use new VertexAI API
@@ -295,6 +297,7 @@ class CVEProcessor:
     )
     def generate_and_parse_content(self, model, prompt, cve, use_new_api=False):
         """Generate content and parse JSON with retries."""
+        global NEW_API_AVAILABLE
         if use_new_api and NEW_API_AVAILABLE:
             # Use new VertexAI API
             contents = [
@@ -336,11 +339,11 @@ class CVEProcessor:
         description = row['Description']
         output_filename = f"{cve}_keyphrases.json"
         output_path = os.path.join(self.output_dir, output_filename)
-        error_path = os.path.join("tmp/", 'error_logs', f"{cve}_error.json")
+        error_path = os.path.join("logs", 'error_logs', f"{cve}_error.json")
         
         # Create directories if they don't exist
         os.makedirs(self.output_dir, exist_ok=True)
-        os.makedirs(os.path.join("tmp", 'error_logs'), exist_ok=True)
+        os.makedirs(os.path.join("logs", 'error_logs'), exist_ok=True)
         
         # Skip if already processed successfully
         if os.path.exists(output_path):
@@ -428,7 +431,7 @@ class CVEProcessor:
         
         # Create DataFrame of already processed CVEs
         df_already = self.create_cve_dataframe()
-        df_already.to_csv("./tmp/keyphrases_already.csv", index=False)
+        df_already.to_csv("./logs/keyphrases_already.csv", index=False)
         
         # Load new CVE data
         logging.info(f"Loading new CVE data from {self.cve_data_path}...")

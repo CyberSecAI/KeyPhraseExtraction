@@ -1,3 +1,38 @@
-env
-tmp
-CVEs
+# Virtual environment
+env/
+venv/
+
+# Temporary files and processing data
+tmp/
+
+# Generated CVE data and processing outputs
+CVEs/
+
+# Log files and error tracking
+logs/
+*.log
+
+# Failed CVE tracking
+failed_cves*.txt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Configuration files with sensitive data (keep template versions)
+config_local.py
+.env

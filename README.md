@@ -1,288 +1,324 @@
 # CVE Keyphrase Extraction
 
-This project processes CVE (Common Vulnerabilities and Exposures) descriptions to extract structured keyphrases using a finetuned Large Language Model. It organizes the data into standardized JSON format and integrates with a larger CVE information database.
+This project processes CVE (Common Vulnerabilities and Exposures) descriptions to extract structured keyphrases using AI models. It supports both new VertexAI and legacy Google Generative AI APIs with automatic fallback, organizes data into standardized JSON format, and integrates with a larger CVE information database.
+
+## Features
+
+- 🤖 **Dual AI API Support**: VertexAI (fine-tuned models) with automatic fallback to standard Gemini models
+- 📊 **Intelligent Column Detection**: Automatically identifies CVE ID and description columns in various data formats
+- 🔄 **Robust Processing Pipeline**: Multi-stage processing with retry logic and error handling
+- 📝 **Comprehensive Logging**: Structured logging with detailed error tracking
+- 🏗️ **Professional Python Architecture**: Object-oriented design with command-line interface
+- 🛡️ **Data Validation**: JSON validation, duplicate detection, and quality control
+- ⚙️ **Flexible Configuration**: Centralized configuration with support for multiple models
 
 ## Prerequisites
 
 - Python 3.12+
 - Git
-- Access to Google AI Platform (for the Gemini model)
-- Required Python packages:
-  - pandas
-  - google-generativeai
-  - tqdm
-  - pytz
+- Google AI credentials (API key or VertexAI authentication)
+- Required Python packages (see `requirements.txt`)
 
 ## Setup
 
-1. Clone the related CVE info repository:
-```bash
-git clone https://github.com/CyberSecAI/cve_info
-```
-Ensure it's at the same directory level as this repository.
+### 1. Environment Setup
 
-2. Download the CVE dataset:
-- Get `CVSSData.csv.gz` from https://github.com/CyberSecAI/nvd_cve_data/tree/main/data_out/
-- Place it in the `data_in` directory
-
-3. Install required dependencies:
 ```bash
+# Clone the repository
+git clone <repository-url>
+cd KeyPhraseExtraction
+
+# Create and activate virtual environment
+python -m venv env
+source env/bin/activate  # On Windows: env\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+```
+
+### 2. Required Repositories
+
+Clone the related CVE info repository at the same directory level:
+```bash
+cd ..
+git clone https://github.com/CyberSecAI/cve_info
+cd KeyPhraseExtraction
+```
+
+### 3. Data Sources
+
+The script automatically detects and works with CVE data from:
+- **Primary**: `../cvelistV5_process/data_out/cve_records.csv` (default)
+- **Legacy**: `../nvd_cve_data/data_out/CVSSData.csv.gz`
+
+### 4. Authentication
+
+#### For VertexAI (Recommended)
+```bash
+# Set up Google Cloud authentication
+gcloud auth application-default login
+```
+
+#### For Standard Gemini API
+Set your API key in `config.py` or as an environment variable.
+
+## Usage
+
+### Basic Usage
+
+```bash
+# Run with default settings
+python keyphraseExtract.py
+
+# Use custom data source
+python keyphraseExtract.py --cve-data-path /path/to/your/cve_data.csv
+
+# Use custom CVE info directory
+python keyphraseExtract.py --cve-info-dir /path/to/cve_info
+
+# Get help
+python keyphraseExtract.py --help
+```
+
+### Configuration
+
+Edit `config.py` to customize:
+- **Main Model**: Fine-tuned VertexAI endpoint configuration
+- **Fallback Model**: Standard Gemini model settings
+- **Google Cloud**: Project and location settings
+- **Safety Settings**: Content filtering configurations
+
+Example configuration:
+```python
+MAIN_MODEL_CONFIG = {
+    "model_endpoint": "projects/your-project/locations/region/endpoints/123456",
+    "model_type": "vertexai",
+    "temperature": 1,
+    "top_p": 0.95,
+    "max_output_tokens": 8192
+}
+
+FALLBACK_MODEL_CONFIG = {
+    "model_name": "gemini-2.0-flash-exp",
+    "model_type": "standard",
+    "temperature": 1,
+    "response_mime_type": "application/json"
+}
 ```
 
 ## Project Structure
 
 ```
 .
-├── CVEs/
-│   ├── description/    # Extracted CVE descriptions
-│   ├── keyphrases/    # Generated keyphrases
-│   ├── all/           # Merged JSON files
-│   └── invalid/       # Invalid JSON files
-├── tmp/               # Temporary files and logs
-└── notebooks/
+├── keyphraseExtract.py          # Main processing script
+├── config.py                   # Model and API configuration
+├── requirements.txt             # Python dependencies
+├── CLAUDE.md                   # Development guidance
+├── README.md                   # This file
+├── .gitignore                  # Git ignore patterns
+│
+├── CVEs/                       # Processing outputs (gitignored)
+│   ├── description/           # Extracted CVE descriptions
+│   ├── keyphrases/           # AI-generated keyphrases
+│   ├── all/                  # Merged JSON files
+│   └── invalid/              # Failed validation files
+│
+├── logs/                      # Logging directory (gitignored)
+│   ├── cve_processing.log    # Main processing log
+│   ├── keyphrases_already.csv # Processing status
+│   └── error_logs/           # Individual error details
+│       └── CVE-YYYY-XXXXX_error.json
+│
+└── legacy_notebooks/          # Original Jupyter notebooks
     ├── keyphraseExtract.ipynb
     ├── keyphraseExtract_check.ipynb
     └── merge_jsons2all.ipynb
 ```
 
-## Workflow
+## Processing Pipeline
 
-### 1. Keyphrase Extraction (keyphraseExtract.ipynb)
-- Identifies CVEs requiring keyphrase extraction by:
-  - Reading existing processed CVEs from `../cve_info`
-  - Comparing against CVEs in `CVSSData.csv.gz`
-  - Determining which CVEs need processing
-- Processes CVEs:
-  - Extracts descriptions to `CVEs/description/`
-  - Uses Gemini model to extract keyphrases
-  - Stores results in `CVEs/keyphrases/`
-- Generates detailed logs in `tmp/cve_processing.log`
+### 1. Data Loading and Preparation
+- Loads existing processed CVEs from `../cve_info`
+- Reads new CVE data with intelligent column detection
+- Filters out already processed CVEs
+- Cleans and normalizes descriptions
+- Saves individual description files
 
-### 2. Quality Control (keyphraseExtract_check.ipynb)
-- Validates generated JSON files:
-  - Checks for proper JSON formatting
-  - Verifies required fields presence
-  - Identifies duplicate content
-  - Validates field consistency
-- Moves invalid files to `CVEs/invalid/`
-- Generates validation reports and error logs
+### 2. AI Processing
+- **Primary**: Uses fine-tuned VertexAI model (if available)
+- **Fallback**: Uses standard Gemini model for failed cases
+- **Retry Logic**: Up to 3 attempts per CVE with exponential backoff
+- **Rate Limiting**: Handles API quotas and resource exhaustion
 
-### 3. Data Consolidation (merge_jsons2all.ipynb)
-- Merges processed data into final JSON format:
-  - Combines descriptions and keyphrases
-  - Normalizes field names to camelCase
-  - Validates impact text consistency
-  - Adds metadata (version, timestamp)
-- Creates consolidated files in `CVEs/all/`
+### 3. Quality Control
+- JSON validation and parsing
+- Error isolation and detailed logging
+- Progress tracking and reporting
+- Duplicate detection and prevention
 
-### 4. Data Integration (move2cve_dir_hash.py)
-- Organizes processed files into the CVE info repository:
-  - Moves files from `CVEs/all` to appropriate subdirectories in `../cve_info`
-  - Uses SHA-256 hashing to prevent duplicates
-  - Maintains proper CVE directory structure
-  - Provides detailed operation logs
+### 4. Output Generation
+Generates structured JSON with extracted keyphrases:
 
-## JSON Schema
-
-The final JSON output follows this structure:
 ```json
 {
     "cveId": "CVE-YYYY-XXXXX",
     "version": "1.0.0",
-    "timestamp": "ISO-8601-timestamp",
+    "timestamp": "2025-07-03T12:00:00Z",
     "description": "CVE description text",
     "keyphrases": {
-        "rootcause": "",
-        "weakness": "",
-        "impact": "",
-        "vector": "",
-        "attacker": "",
-        "product": "",
-        "version": "",
-        "component": ""
+        "rootcause": "buffer overflow",
+        "weakness": "improper input validation",
+        "impact": "arbitrary code execution",
+        "vector": "network",
+        "attacker": "remote unauthenticated attacker",
+        "product": "Example Software",
+        "version": "1.0 to 2.5",
+        "component": "authentication module"
     },
     "mitreTechnicalImpacts": []
 }
 ```
 
+## Logging and Monitoring
+
+### Log Files
+
+| File | Purpose | Location |
+|------|---------|----------|
+| `cve_processing.log` | Main activity log | `logs/` |
+| `CVE-*_error.json` | Individual error details | `logs/error_logs/` |
+| `keyphrases_already.csv` | Processing status | `logs/` |
+| `failed_cves.txt` | Failed CVE list | Root directory |
+
+### Log Content Examples
+
+**Main Log:**
+```
+2025-07-03 12:00:00,123 - INFO - Using new VertexAI API
+2025-07-03 12:00:01,456 - INFO - Loaded 5000 new CVEs for processing
+2025-07-03 12:00:05,789 - INFO - Processed CVE-2024-1234 (API: new)
+2025-07-03 12:00:08,012 - ERROR - Error processing CVE-2024-5678: Invalid JSON
+```
+
+**Error Detail:**
+```json
+{
+    "cve": "CVE-2024-5678",
+    "error": "Invalid JSON response",
+    "timestamp": "2025-07-03 12:00:08",
+    "api_used": "new",
+    "description": "Buffer overflow in...",
+    "raw_response": "malformed response..."
+}
+```
+
+## Data Sources and Compatibility
+
+### Supported Input Formats
+
+The script automatically detects column names for:
+
+| Data Source | CVE Column | Description Column | Format |
+|-------------|------------|-------------------|---------|
+| cvelistV5_process | `cve_id` | `description` | CSV |
+| nvd_cve_data | `CVE` | `Description` | CSV/CSV.GZ |
+| Custom | Auto-detected | Auto-detected | CSV/CSV.GZ |
+
+### Column Detection Logic
+
+- **CVE ID**: Looks for `cve`, `cveid`, `cve_id`, `id`, `identifier` or columns with CVE-like values
+- **Description**: Looks for `description`, `desc`, `summary`, `text`, `details` or longest text column
+
 ## Error Handling
 
-The system includes comprehensive error handling:
-- Invalid JSON detection and isolation
-- Duplicate content detection using hash comparison
-- Impact text validation
-- Detailed error logging
-- Automated file organization and cleanup
+### Comprehensive Error Management
+- **API Failures**: Automatic retry with exponential backoff
+- **JSON Parsing**: Error isolation and detailed logging
+- **Rate Limiting**: Sleep and retry on quota exhaustion
+- **Model Failures**: Automatic fallback to secondary model
+- **Data Issues**: Graceful handling of malformed inputs
 
-## Maintenance
+### Monitoring and Debugging
+- Real-time progress tracking with `tqdm`
+- Detailed error logs with full context
+- Performance metrics and timing
+- API usage tracking (primary vs fallback)
 
-- Check `tmp/cve_processing.log` for processing errors
-- Review `impact_validation_errors.log` for impact text inconsistencies
-- Use https://jsonlint.com/ for manual JSON validation when needed
-- Monitor `CVEs/invalid/` for problematic files requiring attention
-# Notes
+## Performance and Scalability
 
-## CVE Schema root-cause tags
-There is some discussion about adding **root cause tags and descriptions** to cna and adp tag files per https://github.com/CVEProject/cve-schema/issues/22.
+- **Parallel Processing**: Multi-threaded file reading
+- **Memory Efficient**: Streaming processing for large datasets
+- **Incremental Updates**: Only processes new CVEs
+- **Resource Management**: Handles API quotas and timeouts
+- **Progress Persistence**: Resumes from interruptions
 
-There is a [PR](https://github.com/CVEProject/cve-schema/pull/335/commits/6b3c524fdde009d7ff8bba9ce4c41ad24f0cf336) (not merged as at Dec 15 2024) to add these tags "hardware-root-cause", "software-root-cause", "specification-root-cause"
+## Development
 
+### Code Organization
+- **Object-Oriented Design**: `CVEProcessor` class encapsulates functionality
+- **Modular Functions**: Clear separation of concerns
+- **Type Hints**: Comprehensive type annotations
+- **Documentation**: Detailed docstrings and comments
 
+### Testing and Validation
+- Column detection testing
+- Data loading verification
+- API integration testing
+- Error handling validation
 
-## Impact field
-The [CVE Record Schema](https://github.com/CVEProject/cve-schema/blob/main/schema/CVE_Record_Format.json) supports an Impact tag.
+## Troubleshooting
 
-````
-        "impacts": {
-            "type": "array",
-            "description": "Collection of impacts of this vulnerability.",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-                "type": "object",
-                "description": "This is impact type information (e.g. a text description.",
-                "required": ["descriptions"],
-                "properties": {
-                    "capecId": {
-                        "type": "string",
-                        "description": "CAPEC ID that best relates to this impact.",
-                        "minLength": 7,
-                        "maxLength": 11,
-                        "pattern": "^CAPEC-[1-9][0-9]{0,4}$"
-                    },
-                    "descriptions": {
-                        "description": "Prose description of the impact scenario. At a minimum provide the description given by CAPEC.",
-                        "$ref": "#/definitions/descriptions"
-                    }
-                },
-                "additionalProperties": false
-            }
-        },
-````
+### Common Issues
 
-> [!NOTE]  
-> CAPEC is for Attack Patterns. So it is interesting to see it being used here with Impact.
+1. **Column Detection Failures**
+   ```bash
+   # Check available columns
+   python -c "import pandas as pd; print(pd.read_csv('path/to/data.csv', nrows=1).columns.tolist())"
+   ```
 
-## Product
-The [CVE Record Schema](https://github.com/CVEProject/cve-schema/blob/main/schema/CVE_Record_Format.json) supports a Product tag, which includes a Vendor tag.
+2. **API Authentication**
+   ```bash
+   # Verify VertexAI authentication
+   gcloud auth application-default print-access-token
+   ```
 
-````
-        "product": {
-            "type": "object",
-            "description": "Provides information about the set of products and services affected by this vulnerability.",
-            "allOf": [
-                {
-                    "anyOf": [
-                        {"required": ["vendor", "product"]},
-                        {"required": ["collectionURL", "packageName"]}
-                    ]
-                },
-                {
-                    "anyOf": [
-                        {"required": ["versions"]},
-                        {"required": ["defaultStatus"]}
-                    ]
-                }
-            ],
-````
+3. **Missing Dependencies**
+   ```bash
+   # Reinstall requirements
+   pip install -r requirements.txt --upgrade
+   ```
 
-Related fields include
-- packageName
-- cpes
-- modules
-- programFiles
-- programRoutines
-- platforms
-- repo
+### Log Analysis
+- Check `logs/cve_processing.log` for processing status
+- Review `logs/error_logs/` for specific failure details
+- Monitor `failed_cves.txt` for patterns in failures
 
-## Version
-The [CVE Record Schema](https://github.com/CVEProject/cve-schema/blob/main/schema/CVE_Record_Format.json) supports a Version tag.
+## Contributing
 
-````
- "versions": {
-                    "type": "array",
-                    "description": "Set of product versions or version ranges related to the vulnerability. The versions satisfy the CNA Rules [8.1.2 requirement](https://cve.mitre.org/cve/cna/rules.html#section_8-1_cve_entry_information_requirements). Versions or defaultStatus may be omitted, but not both.",
-                    "minItems": 1,
-                    "uniqueItems": true,
-                    "items": {
-                        "type": "object",
-                        "description": "A single version or a range of versions, with vulnerability status.\n\nAn entry with only 'version' and 'status' indicates the status of a single version.\n\nOtherwise, an entry describes a range; it must include the 'versionType' property, to define the version numbering semantics in use, and 'limit', to indicate the non-inclusive upper limit of the range. The object describes the status for versions V such that 'version' <= V and V < 'limit', using the <= and < semantics defined for the specific kind of 'versionType'. Status changes within the range can be specified by an optional 'changes' list.\n\nThe algorithm to decide the status specified for a version V is:\n\n\tfor entry in product.versions {\n\t\tif entry.lessThan is not present and entry.lessThanOrEqual is not present and v == entry.version {\n\t\t\treturn entry.status\n\t\t}\n\t\tif (entry.lessThan is present and entry.version <= v and v < entry.lessThan) or\n\t\t   (entry.lessThanOrEqual is present and entry.version <= v and v <= entry.lessThanOrEqual) { // <= and < defined by entry.versionType\n\t\t\tstatus = entry.status\n\t\t\tfor change in entry.changes {\n\t\t\t\tif change.at <= v {\n\t\t\t\t\tstatus = change.status\n\t\t\t\t}\n\t\t\t}\n\t\t\treturn status\n\t\t}\n\t}\n\treturn product.defaultStatus\n\n.",
-                        "oneOf": [
-                            {
-                                "required": ["version", "status"],
-                                "maxProperties": 2
-                            },
-                            {
-                                "required": ["version", "status", "versionType"],
-                                "maxProperties": 3
-                            },
-                            {
-                                "required": ["version", "status", "versionType", "lessThan"]
-                            },
-                            {
-                                "required": ["version", "status", "versionType", "lessThanOrEqual"]
-                            }
-                        ],
-                        "properties": {
-                            "version": {
-                                "description": "The single version being described, or the version at the start of the range. By convention, typically 0 denotes the earliest possible version.",
-                                "$ref": "#/definitions/version"
-                            },
-                            "status": {
-                                "description": "The vulnerability status for the version or range of versions. For a range, the status may be refined by the 'changes' list.",
-                                "$ref": "#/definitions/status"
-                            },
-                            "versionType": {
-                                "type": "string",
-                                "description": "The version numbering system used for specifying the range. This defines the exact semantics of the comparison (less-than) operation on versions, which is required to understand the range itself. 'Custom' indicates that the version type is unspecified and should be avoided whenever possible. It is included primarily for use in conversion of older data files.",
-                                "minLength": 1,
-                                "maxLength": 128,
-                                "examples": [
-                                    "custom",
-                                    "git",
-                                    "maven",
-                                    "python",
-                                    "rpm",
-                                    "semver"
-                                ]
-                            },
-                            "lessThan": {
-                                "description": "The non-inclusive upper limit of the range. This is the least version NOT in the range. The usual version syntax is expanded to allow a pattern to end in an asterisk `(*)`, indicating an arbitrarily large number in the version ordering. For example, `{version: 1.0 lessThan: 1.*}` would describe the entire 1.X branch for most range kinds, and `{version: 2.0, lessThan: *}` describes all versions starting at 2.0, including 3.0, 5.1, and so on. Only one of lessThan and lessThanOrEqual should be specified.",
-                                "$ref": "#/definitions/version"
-                            },
-                            "lessThanOrEqual": {
-                                "description": "The inclusive upper limit of the range. This is the greatest version contained in the range. Only one of lessThan and lessThanOrEqual should be specified. For example, `{version: 1.0, lessThanOrEqual: 1.3}` covers all versions from 1.0 up to and including 1.3.",
-                                "$ref": "#/definitions/version"
-                            },
-                            "changes": {
-                                "type": "array",
-                                "description": "A list of status changes that take place during the range. The array should be sorted in increasing order by the 'at' field, according to the versionType, but clients must re-sort the list themselves rather than assume it is sorted.",
-                                "minItems": 1,
-                                "uniqueItems": true,
-                                "items": {
-                                    "type": "object",
-                                    "description": "The start of a single status change during the range.",
-                                    "required": ["at", "status"],
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "at": {
-                                            "description": "The version at which a status change occurs.",
-                                            "$ref": "#/definitions/version"
-                                        },
-                                        "status": {
-                                            "description": "The new status in the range starting at the given version.",
-                                            "$ref": "#/definitions/status"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "additionalProperties": false
-                    }
-                }
-````
+1. Follow the existing code style and architecture
+2. Add comprehensive logging for new features
+3. Update tests and documentation
+4. Ensure backward compatibility
 
+## License
 
+[Include your license information here]
 
+---
 
+## Schema References
+
+### CVE Schema Evolution
+
+This project aligns with ongoing CVE schema developments:
+
+- **Root Cause Tags**: [CVE Schema Issue #22](https://github.com/CVEProject/cve-schema/issues/22)
+- **Impact Fields**: [CVE Record Schema](https://github.com/CVEProject/cve-schema/blob/main/schema/CVE_Record_Format.json)
+
+### Output Compatibility
+
+The extracted keyphrases are designed to be compatible with:
+- MITRE CVE schema standards
+- CAPEC attack pattern classifications
+- CWE weakness categorizations
+- Industry vulnerability assessment tools
