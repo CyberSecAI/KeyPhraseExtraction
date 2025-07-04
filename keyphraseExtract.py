@@ -39,9 +39,6 @@ NEW_API_AVAILABLE = True
 from config import GOOGLE_CLOUD_CONFIG, MAIN_MODEL_CONFIG, FALLBACK_MODEL_CONFIG
 
 
-# KeyPhrases schema removed - not needed with new API
-
-
 class CVEProcessor:
     """Main class for processing CVE descriptions and extracting keyphrases."""
     

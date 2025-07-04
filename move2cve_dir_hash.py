@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Usage python3 ./move2cve_dir_hash.py 
 
 import os
