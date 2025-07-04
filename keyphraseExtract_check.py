@@ -42,6 +42,45 @@ class CVEKeyphraseValidator:
         os.makedirs(self.invalid_dir, exist_ok=True)
         os.makedirs('logs', exist_ok=True)
 
+    def is_empty_keyphrases(self, json_content: Dict) -> bool:
+        """
+        Check if all keyphrase fields are empty or contain only whitespace.
+        
+        Args:
+            json_content: The JSON content to check
+            
+        Returns:
+            True if all keyphrase fields are empty, False otherwise
+        """
+        for field in self.expected_fields:
+            if field in json_content:
+                value = json_content[field]
+                if isinstance(value, str) and value.strip():
+                    return False
+                elif value and not isinstance(value, str):
+                    return False
+        return True
+
+    def has_single_keyphrase(self, json_content: Dict) -> bool:
+        """
+        Check if exactly one keyphrase field contains content.
+        
+        Args:
+            json_content: The JSON content to check
+            
+        Returns:
+            True if exactly one keyphrase field has content, False otherwise
+        """
+        non_empty_count = 0
+        for field in self.expected_fields:
+            if field in json_content:
+                value = json_content[field]
+                if isinstance(value, str) and value.strip():
+                    non_empty_count += 1
+                elif value and not isinstance(value, str):
+                    non_empty_count += 1
+        return non_empty_count == 1
+
     def validate_json_content(self, file_path: str) -> Tuple[bool, Dict, Optional[Dict], Optional[str]]:
         """
         Validate JSON content of a keyphrase file.
@@ -87,6 +126,14 @@ class CVEKeyphraseValidator:
                                if list(json_content.keys()).count(field) > 1]
             if duplicated_fields:
                 issues['duplicated_fields'] = duplicated_fields
+
+            # Check for empty keyphrase content
+            if self.is_empty_keyphrases(json_content):
+                issues['empty_keyphrases'] = 'All keyphrase fields are empty or contain only whitespace'
+            
+            # Check for single keyphrase content
+            if self.has_single_keyphrase(json_content):
+                issues['single_keyphrase'] = 'Only one keyphrase field contains content'
 
             is_valid = not bool(issues)
             return is_valid, issues, json_content, content
@@ -183,10 +230,26 @@ class CVEKeyphraseValidator:
         valid_count = df['json_valid'].sum()
         invalid_count = len(df) - valid_count
         
+        # Count empty keyphrase files
+        empty_count = 0
+        single_count = 0
+        for result in self.results:
+            if not result['json_valid'] and isinstance(result.get('Issues'), dict):
+                if 'empty_keyphrases' in result['Issues']:
+                    empty_count += 1
+                if 'single_keyphrase' in result['Issues']:
+                    single_count += 1
+        
+        # Count zero-byte files
+        zero_byte_count = len(df[df['File Size (bytes)'] == 0])
+        
         self.logger.info(f"Validation Summary:")
         self.logger.info(f"  Total CVEs processed: {len(df)}")
         self.logger.info(f"  Valid JSON files: {valid_count}")
         self.logger.info(f"  Invalid JSON files: {invalid_count}")
+        self.logger.info(f"  Zero-byte files: {zero_byte_count}")
+        self.logger.info(f"  Empty keyphrase files: {empty_count}")
+        self.logger.info(f"  Single keyphrase files: {single_count}")
         
         # Check for duplicate content
         duplicate_content = {hash_val: cves for hash_val, cves in self.content_hashes.items() 
@@ -217,6 +280,34 @@ class CVEKeyphraseValidator:
                 invalid_csv_path = 'logs/invalid_cve_keyphrases.csv'
                 invalid_df.to_csv(invalid_csv_path, index=False)
                 self.logger.info(f"Invalid files report saved to {invalid_csv_path}")
+            
+            # Save empty keyphrase files report
+            empty_files = []
+            single_files = []
+            for result in self.results:
+                if not result['json_valid'] and isinstance(result.get('Issues'), dict):
+                    if 'empty_keyphrases' in result['Issues']:
+                        empty_files.append(result['CVE'])
+                    if 'single_keyphrase' in result['Issues']:
+                        single_files.append(result['CVE'])
+            
+            if empty_files:
+                empty_csv_path = 'logs/empty_keyphrases.txt'
+                with open(empty_csv_path, 'w', encoding='utf-8') as f:
+                    f.write("Files with empty keyphrase content:\n")
+                    f.write("=" * 50 + "\n")
+                    for cve in sorted(empty_files):
+                        f.write(f"{cve}\n")
+                self.logger.info(f"Empty keyphrase files report saved to {empty_csv_path}")
+            
+            if single_files:
+                single_csv_path = 'logs/single_keyphrases.txt'
+                with open(single_csv_path, 'w', encoding='utf-8') as f:
+                    f.write("Files with only one keyphrase field containing content:\n")
+                    f.write("=" * 60 + "\n")
+                    for cve in sorted(single_files):
+                        f.write(f"{cve}\n")
+                self.logger.info(f"Single keyphrase files report saved to {single_csv_path}")
             
             # Save validation summary
             validation_csv_path = 'logs/cve_keyphrases_validation.csv'

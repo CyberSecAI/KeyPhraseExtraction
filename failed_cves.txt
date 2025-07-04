@@ -1,1 +1,9 @@
 tmp/CVE-2022-20435_keyphrases.json
+CVEs/keyphrases/CVE-2023-28912_keyphrases.json
+CVEs/keyphrases/CVE-2025-27025_keyphrases.json
+CVEs/keyphrases/CVE-2025-27460_keyphrases.json
+CVEs/keyphrases/CVE-2025-38182_keyphrases.json
+CVEs/keyphrases/CVE-2025-38196_keyphrases.json
+CVEs/keyphrases/CVE-2025-38201_keyphrases.json
+CVEs/keyphrases/CVE-2025-38213_keyphrases.json
+CVEs/keyphrases/CVE-2025-52901_keyphrases.json
