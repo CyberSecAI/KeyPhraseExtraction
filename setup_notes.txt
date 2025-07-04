@@ -15,4 +15,4 @@ pip install -r requirements.txt
 cp -rv --update=none ./CVEs/keyphrases/ ./SOMEWHERE ; date
 
 #get counts of files
-ls ./CVEs/keyphrases | wc -l; ls ./tmp/error_logs | wc -l
+ls ./CVEs/keyphrases | wc -l; ls ./logs/error_logs | wc -l

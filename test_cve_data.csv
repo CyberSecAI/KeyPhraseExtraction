@@ -1,4 +1,0 @@
-data_type,data_version,cve_id,state,description,rejected_reason
-CVE_RECORD,5.1,CVE-TEST-0001,PUBLISHED,"Buffer overflow vulnerability","" 
-CVE_RECORD,5.1,CVE-TEST-0002,REJECTED,"","This CVE is rejected because it is a duplicate"
-CVE_RECORD,5.1,CVE-TEST-0003,PUBLISHED,"SQL injection in web application",""

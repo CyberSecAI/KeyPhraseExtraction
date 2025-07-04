@@ -290,8 +290,20 @@ class CVEProcessor:
         try:
             prompt = "<INSTRUCTION>Only use these json fields:rootcause, weakness, impact, vector, attacker, product, version, component</INSTRUCTION>" + description
             
-            # Generate and parse content with retries
-            parsed_json = self.generate_and_parse_content(prompt, cve, use_fallback)
+            # Generate and parse content with retries and timeout
+            import signal
+            
+            def timeout_handler(signum, frame):
+                raise TimeoutError("API call timed out after 5 minutes")
+            
+            # Set timeout for 5 minutes
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(300)  # 5 minutes
+            
+            try:
+                parsed_json = self.generate_and_parse_content(prompt, cve, use_fallback)
+            finally:
+                signal.alarm(0)  # Cancel the alarm
             
             # Save the response to the output file
             with open(output_path, 'w') as f:
@@ -592,15 +604,32 @@ class CVEProcessor:
                         
                 except Exception as e:
                     error_str = str(e)
-                    if "429 Resource has been exhausted" in error_str:
-                        logging.warning("Resource exhaustion detected. Sleeping for 1 hour...")
+                    
+                    # Handle different types of errors
+                    if "429 Resource has been exhausted" in error_str or "quota" in error_str.lower():
+                        logging.warning("Rate limit/quota exhaustion detected. Sleeping for 1 hour...")
                         time.sleep(3600)
                         continue
-                    attempts += 1
-                    if attempts < max_attempts:
-                        model_type = "fallback" if use_fallback else "primary"
-                        logging.error(f"{model_type.title()} model error (attempt {attempts}): {error_str}")
-                        continue
+                    elif ("timeout" in error_str.lower() or "connection" in error_str.lower() or 
+                          "TimeoutError" in error_str or "API call timed out" in error_str):
+                        logging.warning(f"Connection/timeout error: {error_str}. Sleeping for 30 seconds...")
+                        time.sleep(30)
+                        attempts += 1
+                        if attempts < max_attempts:
+                            continue
+                    elif "500" in error_str or "502" in error_str or "503" in error_str or "504" in error_str:
+                        logging.warning(f"Server error: {error_str}. Sleeping for 60 seconds...")
+                        time.sleep(60)
+                        attempts += 1
+                        if attempts < max_attempts:
+                            continue
+                    else:
+                        attempts += 1
+                        if attempts < max_attempts:
+                            model_type = "fallback" if use_fallback else "primary"
+                            logging.error(f"{model_type.title()} model error (attempt {attempts}): {error_str}")
+                            time.sleep(5)  # Brief pause before retry
+                            continue
             
             # If all attempts failed
             if not cve_success:
