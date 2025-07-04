@@ -1,0 +1,160 @@
+name: Manual CVE Processing
+
+on:
+  workflow_dispatch:
+    inputs:
+      processing_mode:
+        description: 'Processing mode'
+        required: true
+        default: 'incremental'
+        type: choice
+        options:
+          - incremental
+          - full_reprocess
+          - validation_only
+          - merge_only
+      cve_data_source:
+        description: 'CVE data source path (optional)'
+        required: false
+        default: '../cvelistV5_process/data_out/cve_records_published.csv'
+        type: string
+      max_cves:
+        description: 'Maximum number of CVEs to process (0 = no limit)'
+        required: false
+        default: '0'
+        type: string
+      log_level:
+        description: 'Logging level'
+        required: false
+        default: 'INFO'
+        type: choice
+        options:
+          - DEBUG
+          - INFO
+          - WARNING
+          - ERROR
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  manual-processing:
+    name: Manual CVE Processing - ${{ github.event.inputs.processing_mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 480  # 8 hours for manual runs
+    
+    steps:
+    - name: Checkout repositories
+      uses: actions/checkout@v4
+      with:
+        path: KeyPhraseExtraction
+        
+    - name: Checkout CVE info repository
+      if: github.event.inputs.processing_mode != 'validation_only'
+      uses: actions/checkout@v4
+      with:
+        repository: CyberSecAI/cve_info
+        token: ${{ secrets.CVE_INFO_PAT }}
+        path: cve_info
+        
+    - name: Checkout CVE data source repository
+      uses: actions/checkout@v4
+      with:
+        repository: CyberSecAI/cvelistV5_process
+        path: cvelistV5_process
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        
+    - name: Install dependencies
+      working-directory: KeyPhraseExtraction
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GOOGLE_CLOUD_CREDENTIALS }}
+        
+    - name: Set up Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+      
+    - name: Create directories
+      working-directory: KeyPhraseExtraction
+      run: |
+        mkdir -p CVEs/description CVEs/keyphrases CVEs/all CVEs/invalid
+        mkdir -p logs tmp
+        
+    - name: Run keyphrase extraction
+      if: github.event.inputs.processing_mode == 'incremental' || github.event.inputs.processing_mode == 'full_reprocess'
+      working-directory: KeyPhraseExtraction
+      run: |
+        args="--cve-data-path ${{ github.event.inputs.cve_data_source }}"
+        
+        if [ "${{ github.event.inputs.processing_mode }}" = "full_reprocess" ]; then
+          # Clear existing keyphrases for full reprocess
+          rm -rf CVEs/keyphrases/*
+          echo "Cleared existing keyphrases for full reprocessing"
+        fi
+        
+        python keyphraseExtract.py $args --cve-info-dir ../cve_info
+        
+    - name: Run validation only
+      if: github.event.inputs.processing_mode == 'validation_only'
+      working-directory: KeyPhraseExtraction
+      run: |
+        python keyphraseExtract_check.py --input-dir CVEs/keyphrases
+        
+    - name: Run merge and organization
+      if: github.event.inputs.processing_mode != 'validation_only'
+      working-directory: KeyPhraseExtraction
+      run: |
+        # Run quality control
+        python keyphraseExtract_check.py --cve-info-dir ../cve_info
+        
+        # Merge files
+        python merge_jsons2all.py --log-level ${{ github.event.inputs.log_level }}
+        
+        # Organize files
+        python move2cve_dir_hash.py
+        
+    - name: Generate detailed report
+      working-directory: KeyPhraseExtraction
+      if: always()
+      run: |
+        echo "# Manual CVE Processing Report" > manual_report.md
+        echo "**Mode:** ${{ github.event.inputs.processing_mode }}" >> manual_report.md
+        echo "**Data Source:** ${{ github.event.inputs.cve_data_source }}" >> manual_report.md
+        echo "**Log Level:** ${{ github.event.inputs.log_level }}" >> manual_report.md
+        echo "**Date:** $(date -u)" >> manual_report.md
+        echo "" >> manual_report.md
+        
+        # File counts
+        echo "## File Statistics" >> manual_report.md
+        echo "- Keyphrase files: $(find CVEs/keyphrases -name "*.json" 2>/dev/null | wc -l)" >> manual_report.md
+        echo "- Merged files: $(find CVEs/all -name "*.json" 2>/dev/null | wc -l)" >> manual_report.md
+        echo "- Invalid files: $(find CVEs/invalid -name "*.json" 2>/dev/null | wc -l)" >> manual_report.md
+        
+        # Log summaries
+        if [ -f "logs/cve_processing.log" ]; then
+          echo "" >> manual_report.md
+          echo "## Processing Log Summary" >> manual_report.md
+          echo '```' >> manual_report.md
+          grep -E "(INFO|WARNING|ERROR)" logs/cve_processing.log | tail -20 >> manual_report.md
+          echo '```' >> manual_report.md
+        fi
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: manual-processing-${{ github.event.inputs.processing_mode }}-${{ github.run_number }}
+        path: |
+          KeyPhraseExtraction/logs/
+          KeyPhraseExtraction/manual_report.md
+          KeyPhraseExtraction/failed_cves.txt
+        retention-days: 30

@@ -64,9 +64,66 @@ gcloud auth application-default login
 #### For Standard Gemini API
 Set your API key in `config.py` or as an environment variable.
 
+## GitHub Actions Automation
+
+[![CVE Keyphrase Extraction](https://github.com/CyberSecAI/KeyPhraseExtraction/actions/workflows/cve-keyphrase-extraction.yml/badge.svg)](https://github.com/CyberSecAI/KeyPhraseExtraction/actions/workflows/cve-keyphrase-extraction.yml)
+
+The system includes comprehensive GitHub Actions workflows for automated processing:
+
+### 🔄 Automated Daily Processing
+
+**Workflow**: `.github/workflows/cve-keyphrase-extraction.yml`
+- **Schedule**: Daily at 2 AM UTC
+- **Full Pipeline**: Extract → Validate → Merge → Organize
+- **Auto-commit**: Changes pushed to CVE info repository
+- **Error Handling**: Automatic issue creation on failures
+- **Artifacts**: Processing logs and invalid files uploaded
+
+### 🎛️ Manual Processing Controls
+
+**Workflow**: `.github/workflows/manual-trigger.yml`
+- **Incremental**: Process only new CVEs (default)
+- **Full Reprocess**: Reprocess all CVEs from scratch
+- **Validation Only**: Run quality control checks
+- **Merge Only**: Skip extraction, only merge existing files
+
+### 🧪 Testing Pipeline
+
+**Workflow**: `.github/workflows/test-pipeline.yml`
+- **Syntax Validation**: Python syntax and import testing
+- **Small Batch**: End-to-end testing with sample data
+- **Full Validation**: Comprehensive configuration and structure testing
+
+### Setup Instructions
+
+See [`.github/SETUP.md`](.github/SETUP.md) for complete setup instructions including:
+- Required secrets configuration (Google Cloud credentials, PAT tokens)
+- Service account setup with proper permissions
+- Workflow customization options
+- Monitoring and troubleshooting guides
+
 ## Usage
 
-### Complete Processing Workflow
+### Automated Processing (Recommended)
+
+1. **Setup GitHub Actions** (one-time):
+   ```bash
+   # Follow instructions in .github/SETUP.md
+   # Configure Google Cloud credentials
+   # Set up repository secrets
+   ```
+
+2. **Monitor Automated Runs**:
+   - Check **Actions** tab for daily processing status
+   - Review artifacts for detailed logs and statistics
+   - Address any auto-generated issues for failures
+
+3. **Manual Control When Needed**:
+   - Navigate to **Actions** → **Manual CVE Processing**
+   - Choose processing mode and options
+   - Monitor progress in real-time
+
+### Complete Processing Workflow (Local)
 
 Run the scripts in sequence for full processing:
 
