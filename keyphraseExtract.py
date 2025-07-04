@@ -110,6 +110,8 @@ class CVEProcessor:
             max_output_tokens=MAIN_MODEL_CONFIG["max_output_tokens"],
             safety_settings=safety_settings,
             system_instruction=[types.Part.from_text(text=MAIN_MODEL_CONFIG["system_instruction"])],
+            response_mime_type=MAIN_MODEL_CONFIG["response_mime_type"],
+            response_schema=MAIN_MODEL_CONFIG["response_schema"],
         )
 
     def _create_fallback_config(self):
@@ -127,6 +129,8 @@ class CVEProcessor:
             max_output_tokens=FALLBACK_MODEL_CONFIG["max_output_tokens"],
             safety_settings=safety_settings,
             system_instruction=[types.Part.from_text(text=FALLBACK_MODEL_CONFIG["system_instruction"])],
+            response_mime_type=FALLBACK_MODEL_CONFIG["response_mime_type"],
+            response_schema=FALLBACK_MODEL_CONFIG["response_schema"],
         )
 
     @staticmethod
