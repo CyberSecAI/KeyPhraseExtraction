@@ -227,6 +227,90 @@ class CVEProcessor:
         
         return main_description
 
+    @staticmethod
+    def check_keyphrase_quality(keyphrase_data: Dict) -> Dict:
+        """
+        Check the quality of extracted keyphrases.
+        
+        Args:
+            keyphrase_data: Dictionary containing extracted keyphrases
+            
+        Returns:
+            Dictionary with quality assessment:
+            - is_empty: True if all fields are empty
+            - is_single: True if only one field has content  
+            - non_empty_count: Number of fields with content
+            - non_empty_fields: List of field names with content
+            - needs_retry: True if quality is insufficient (0 or 1 keyphrases)
+        """
+        expected_fields = {'rootcause', 'weakness', 'impact', 'vector', 'attacker', 'product', 'version', 'component'}
+        
+        # Count non-empty fields
+        non_empty_fields = []
+        for field in expected_fields:
+            if field in keyphrase_data:
+                value = keyphrase_data[field]
+                if isinstance(value, str) and value.strip():
+                    non_empty_fields.append(field)
+                elif value and not isinstance(value, str):
+                    non_empty_fields.append(field)
+        
+        non_empty_count = len(non_empty_fields)
+        is_empty = non_empty_count == 0
+        is_single = non_empty_count == 1
+        needs_retry = non_empty_count <= 1
+        
+        return {
+            'is_empty': is_empty,
+            'is_single': is_single,
+            'non_empty_count': non_empty_count,
+            'non_empty_fields': non_empty_fields,
+            'needs_retry': needs_retry
+        }
+
+    @staticmethod
+    def create_enhancement_prompt(description: str, existing_keyphrases: Dict) -> str:
+        """
+        Create a prompt for enhancing existing keyphrases rather than extracting from scratch.
+        
+        Args:
+            description: Original CVE description
+            existing_keyphrases: Current keyphrase data that needs improvement
+            
+        Returns:
+            Enhancement-focused prompt string
+        """
+        # Format existing keyphrases for display
+        existing_json = json.dumps(existing_keyphrases, indent=2)
+        
+        prompt = f"""<INSTRUCTION>
+You are tasked with REVIEWING and ENHANCING existing keyphrases for a CVE description.
+
+Your job is to:
+1. Review the existing keyphrases below against the CVE description
+2. Add any missing keyphrases that can be extracted from the description
+3. Correct any incorrect or incomplete keyphrases
+4. Ensure all relevant fields are populated when information is available
+
+EXISTING KEYPHRASES:
+{existing_json}
+
+CVE DESCRIPTION:
+{description}
+
+Please provide the IMPROVED keyphrases in JSON format using only these fields:
+rootcause, weakness, impact, vector, attacker, product, version, component
+
+Guidelines:
+- Keep existing accurate keyphrases
+- Add missing keyphrases found in the description
+- Correct any inaccurate or incomplete entries
+- Leave fields empty ("") only if no relevant information exists in the description
+- Focus on extracting specific, actionable information
+</INSTRUCTION>"""
+        
+        return prompt
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -271,7 +355,7 @@ class CVEProcessor:
             cleaned_response = cleaned_response[:last_brace + 1]
             return json.loads(cleaned_response)
 
-    def process_cve(self, row, use_fallback=False):
+    def process_cve(self, row, use_fallback=False, quality_retry=False):
         """Process a single CVE with error handling using new API only."""
         cve = row['CVE']
         description = row['Description']
@@ -283,8 +367,8 @@ class CVEProcessor:
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(os.path.join("logs", 'error_logs'), exist_ok=True)
         
-        # Skip if already processed successfully
-        if os.path.exists(output_path):
+        # Skip if already processed successfully (unless this is a quality retry)
+        if os.path.exists(output_path) and not quality_retry:
             logging.info(f"Skipping {cve} - already processed")
             return True
         
@@ -306,13 +390,47 @@ class CVEProcessor:
             finally:
                 signal.alarm(0)  # Cancel the alarm
             
+            # Check keyphrase quality
+            quality_check = self.check_keyphrase_quality(parsed_json)
+            
+            # If this is not a quality retry and the result needs improvement, try with fallback model
+            if not quality_retry and not use_fallback and quality_check['needs_retry']:
+                logging.info(f"{cve}: Primary model produced {quality_check['non_empty_count']} keyphrases. Retrying with fallback model for enhancement.")
+                
+                # Try with fallback model using enhancement prompt
+                try:
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(300)  # 5 minutes
+                    
+                    try:
+                        # Create enhancement prompt that includes existing keyphrases
+                        enhancement_prompt = self.create_enhancement_prompt(description, parsed_json)
+                        fallback_json = self.generate_and_parse_content(enhancement_prompt, cve, use_fallback=True)
+                    finally:
+                        signal.alarm(0)
+                    
+                    # Check quality of fallback result
+                    fallback_quality = self.check_keyphrase_quality(fallback_json)
+                    
+                    # Use fallback result if it's better, otherwise keep original
+                    if fallback_quality['non_empty_count'] > quality_check['non_empty_count']:
+                        parsed_json = fallback_json
+                        quality_check = fallback_quality
+                        logging.info(f"{cve}: Fallback enhancement produced {fallback_quality['non_empty_count']} keyphrases (improved from {quality_check['non_empty_count']})")
+                    else:
+                        logging.info(f"{cve}: Fallback enhancement produced {fallback_quality['non_empty_count']} keyphrases (not better, keeping original)")
+                
+                except Exception as fallback_error:
+                    logging.warning(f"{cve}: Fallback enhancement failed: {str(fallback_error)}. Using original result.")
+            
             # Save the response to the output file
             with open(output_path, 'w') as f:
                 json.dump(parsed_json, f, indent=4)
                 f.write('\n')
             
             model_type = "fallback" if use_fallback else "primary"
-            logging.info(f"Processed {cve} and saved results to {output_filename} (API: new, model: {model_type})")
+            quality_info = f" ({quality_check['non_empty_count']} keyphrases: {', '.join(quality_check['non_empty_fields'])})"
+            logging.info(f"Processed {cve} and saved results to {output_filename} (API: new, model: {model_type}){quality_info}")
             return True
         
         except Exception as e:
@@ -326,6 +444,7 @@ class CVEProcessor:
                 "description": description,
                 "api_used": "new",
                 "model_type": "fallback" if use_fallback else "primary",
+                "quality_retry": quality_retry,
                 "raw_response": getattr(e, 'response', {}).get('text', None) if hasattr(e, 'response') else None
             }
             
@@ -589,7 +708,7 @@ class CVEProcessor:
             while attempts < max_attempts and not cve_success:
                 try:
                     use_fallback = attempts > 0  # Use fallback after first attempt fails
-                    if self.process_cve(row, use_fallback):
+                    if self.process_cve(row, use_fallback, quality_retry=False):
                         successful += 1
                         cve_success = True
                         if use_fallback:
@@ -650,6 +769,141 @@ class CVEProcessor:
 
         logging.info(f"Processing complete. Successful: {successful}/{total} ({primary_attempts} via primary, {fallback_attempts} via fallback)")
         return successful, failed_cves
+    
+    def reprocess_insufficient_keyphrases(self):
+        """Reprocess existing keyphrase files that have 0 or 1 keyphrases with fallback model."""
+        logging.info("Checking existing keyphrase files for insufficient content...")
+        
+        if not os.path.exists(self.output_dir):
+            logging.info("No keyphrase directory found. Nothing to reprocess.")
+            return
+        
+        # Find all existing keyphrase files
+        keyphrase_files = [f for f in os.listdir(self.output_dir) if f.endswith('_keyphrases.json')]
+        
+        insufficient_files = []
+        for filename in keyphrase_files:
+            file_path = os.path.join(self.output_dir, filename)
+            try:
+                with open(file_path, 'r') as f:
+                    keyphrase_data = json.load(f)
+                
+                quality_check = self.check_keyphrase_quality(keyphrase_data)
+                if quality_check['needs_retry']:
+                    cve_id = filename.replace('_keyphrases.json', '')
+                    insufficient_files.append({
+                        'CVE': cve_id,
+                        'file_path': file_path,
+                        'current_count': quality_check['non_empty_count']
+                    })
+            except Exception as e:
+                logging.error(f"Error reading {filename}: {e}")
+        
+        if not insufficient_files:
+            logging.info("No files found with insufficient keyphrases.")
+            return
+        
+        logging.info(f"Found {len(insufficient_files)} files with insufficient keyphrases. Starting reprocessing...")
+        
+        # Load CVE descriptions for reprocessing
+        try:
+            # Try to load from description files first
+            description_dir = "CVEs/description"
+            descriptions = {}
+            
+            if os.path.exists(description_dir):
+                for insufficient in insufficient_files:
+                    cve_id = insufficient['CVE']
+                    desc_file = os.path.join(description_dir, f"{cve_id}_description.json")
+                    if os.path.exists(desc_file):
+                        with open(desc_file, 'r') as f:
+                            desc_data = json.load(f)
+                            descriptions[cve_id] = desc_data.get('description', '')
+            
+            # For CVEs without description files, try to load from original data
+            if len(descriptions) < len(insufficient_files):
+                try:
+                    compression = 'gzip' if self.cve_data_path.endswith('.gz') else None
+                    df_source = pd.read_csv(self.cve_data_path, compression=compression)
+                    
+                    cve_col, desc_col = self._detect_column_names(df_source)
+                    if cve_col and desc_col:
+                        for _, row in df_source.iterrows():
+                            cve_id = row[cve_col]
+                            if cve_id not in descriptions:
+                                descriptions[cve_id] = self.clean_description(row[desc_col])
+                
+                except Exception as e:
+                    logging.warning(f"Could not load source CVE data: {e}")
+            
+            # Reprocess files with fallback model
+            improved = 0
+            failed = 0
+            
+            for insufficient in insufficient_files:
+                cve_id = insufficient['CVE']
+                current_count = insufficient['current_count']
+                
+                if cve_id not in descriptions:
+                    logging.warning(f"No description found for {cve_id}, skipping")
+                    failed += 1
+                    continue
+                
+                # Create a row object similar to what process_cve expects
+                row = {
+                    'CVE': cve_id,
+                    'Description': descriptions[cve_id]
+                }
+                
+                try:
+                    # For reprocessing, use enhancement approach
+                    # Load existing keyphrases first
+                    with open(insufficient['file_path'], 'r') as f:
+                        existing_keyphrases = json.load(f)
+                    
+                    # Create enhancement prompt
+                    enhancement_prompt = self.create_enhancement_prompt(descriptions[cve_id], existing_keyphrases)
+                    
+                    # Use the enhancement approach directly
+                    try:
+                        import signal
+                        def timeout_handler(signum, frame):
+                            raise TimeoutError("API call timed out after 5 minutes")
+                        
+                        signal.signal(signal.SIGALRM, timeout_handler)
+                        signal.alarm(300)  # 5 minutes
+                        
+                        try:
+                            enhanced_json = self.generate_and_parse_content(enhancement_prompt, cve_id, use_fallback=True)
+                        finally:
+                            signal.alarm(0)
+                        
+                        # Check if enhancement improved the result
+                        new_quality = self.check_keyphrase_quality(enhanced_json)
+                        if new_quality['non_empty_count'] > current_count:
+                            # Save the improved result
+                            with open(insufficient['file_path'], 'w') as f:
+                                json.dump(enhanced_json, f, indent=4)
+                                f.write('\n')
+                            
+                            improved += 1
+                            logging.info(f"Enhanced {cve_id}: {current_count} -> {new_quality['non_empty_count']} keyphrases")
+                        else:
+                            logging.info(f"No improvement for {cve_id}: still {new_quality['non_empty_count']} keyphrases")
+                        
+                    except Exception as enhance_error:
+                        logging.error(f"Enhancement failed for {cve_id}: {enhance_error}")
+                        failed += 1
+                        
+                except Exception as e:
+                    logging.error(f"Failed to reprocess {cve_id}: {e}")
+                    failed += 1
+            
+            logging.info(f"Reprocessing complete. Improved: {improved}, Failed: {failed}, Total processed: {len(insufficient_files)}")
+            
+        except Exception as e:
+            logging.error(f"Error during reprocessing: {e}")
+            return
 
     def run(self):
         """Main execution method."""
@@ -682,6 +936,11 @@ def main():
         default="../cvelistV5_process/data_out/cve_records_published.csv",
         help="Path to CVE data CSV file (default: ../cvelistV5_process/data_out/cve_records_published.csv)"
     )
+    parser.add_argument(
+        "--reprocess-insufficient",
+        action="store_true",
+        help="Reprocess existing keyphrase files that have 0 or 1 keyphrases using fallback model"
+    )
     
     args = parser.parse_args()
     
@@ -690,7 +949,12 @@ def main():
             cve_info_dir=args.cve_info_dir,
             cve_data_path=args.cve_data_path
         )
-        processor.run()
+        
+        if args.reprocess_insufficient:
+            processor.reprocess_insufficient_keyphrases()
+        else:
+            processor.run()
+            
     except KeyboardInterrupt:
         logging.info("Process interrupted by user")
     except Exception as e:

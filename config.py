@@ -70,7 +70,7 @@ MAIN_MODEL_CONFIG = {
 # Fallback Model Configuration (Standard Gemini model)
 FALLBACK_MODEL_CONFIG = {
     # Standard Gemini model for fallback processing
-    "model_name": "gemini-2.0-flash-exp",
+    "model_name": "gemini-1.5-flash",
     "model_type": "standard",
     
     # Generation parameters

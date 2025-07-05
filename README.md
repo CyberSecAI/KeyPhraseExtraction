@@ -7,9 +7,11 @@ A comprehensive Python-based system for processing CVE (Common Vulnerabilities a
 - 🤖 **Dual AI API Support**: VertexAI (fine-tuned models) with automatic fallback to standard Gemini models
 - 📊 **Intelligent Column Detection**: Automatically identifies CVE ID and description columns in various data formats
 - 🔄 **Robust Processing Pipeline**: Multi-stage processing with retry logic, timeout handling, and error recovery
+- 🎯 **Automatic Quality Enhancement**: Real-time detection and improvement of insufficient keyphrases (0-1 fields)
+- 🔧 **Smart Enhancement Prompts**: Context-aware prompts that review and improve existing keyphrases rather than extracting from scratch
 - 📝 **Comprehensive Logging**: Structured logging with detailed error tracking and performance monitoring
 - 🏗️ **Professional Python Architecture**: Object-oriented design with full command-line interfaces
-- 🛡️ **Data Validation**: JSON validation, duplicate detection, impact consistency checking, and quality control
+- 🛡️ **Advanced Data Validation**: JSON validation, duplicate detection, empty/single keyphrase detection, and quality control
 - ⚙️ **Flexible Configuration**: Centralized configuration with support for multiple models and custom parameters
 - 🧹 **Automated Cleanup**: Smart filtering of empty, invalid, and orphaned files
 - 📊 **Progress Tracking**: Real-time progress reporting with comprehensive statistics
@@ -157,6 +159,9 @@ python keyphraseExtract.py --cve-data-path /path/to/your/cve_data.csv
 # Use custom CVE info directory
 python keyphraseExtract.py --cve-info-dir /path/to/cve_info
 
+# Reprocess existing files with insufficient keyphrases (0 or 1 fields)
+python keyphraseExtract.py --reprocess-insufficient
+
 # Get help and see all options
 python keyphraseExtract.py --help
 ```
@@ -167,6 +172,9 @@ python keyphraseExtract.py --help
 - Filters out already processed CVEs for efficiency
 - Cleans and normalizes CVE descriptions
 - Uses fine-tuned VertexAI model with automatic fallback
+- **Automatic Quality Enhancement**: Detects insufficient keyphrases (0-1 fields) and automatically retries with enhancement prompts
+- **Smart Enhancement Prompts**: Uses context-aware prompts that review existing keyphrases and improve them
+- **Reprocessing Mode**: `--reprocess-insufficient` flag to improve existing files with poor keyphrase quality
 - 5-minute timeout protection for hanging API calls
 - Comprehensive retry logic with exponential backoff
 - Saves extracted keyphrases to `CVEs/keyphrases/`
@@ -194,11 +202,13 @@ python keyphraseExtract_check.py --help
 
 **Features**:
 - Validates JSON structure and required keyphrase fields
+- **Empty Keyphrase Detection**: Identifies files where all keyphrase fields are empty
+- **Single Keyphrase Detection**: Identifies files with only one non-empty keyphrase field
 - Detects and moves invalid files to `CVEs/invalid/`
 - Identifies duplicate content using MD5 hashing
 - Searches entire CVE repository for missing keyphrases sections
-- Generates comprehensive validation reports
-- Outputs results to `logs/` directory
+- Generates comprehensive validation reports including separate reports for empty and single keyphrase files
+- Outputs results to `logs/` directory (`empty_keyphrases.txt`, `single_keyphrases.txt`)
 
 #### 3. Data Consolidation (`merge_jsons2all.py`)
 
@@ -322,6 +332,123 @@ GOOGLE_CLOUD_CONFIG = {
 └── *.ipynb                     # Legacy Jupyter notebooks (if any)
 ```
 
+## Keyphrase Quality Enhancement System
+
+The system includes an advanced quality enhancement feature that automatically detects and improves insufficient keyphrase extraction results in real-time.
+
+### How Quality Enhancement Works
+
+#### 1. **Real-Time Quality Assessment**
+- Every extracted keyphrase result is immediately analyzed using `check_keyphrase_quality()`
+- Counts non-empty keyphrase fields across all 8 categories: `rootcause`, `weakness`, `impact`, `vector`, `attacker`, `product`, `version`, `component`
+- Flags results with ≤1 non-empty fields as "insufficient" and needing enhancement
+
+#### 2. **Automatic Enhancement Trigger**
+When the primary model produces insufficient results (0 or 1 keyphrases):
+```python
+# Primary extraction result: {"rootcause": "", "weakness": "SQL injection", "impact": "", ...}
+# System detects: only 1 keyphrase field filled
+# Automatically triggers enhancement process
+```
+
+#### 3. **Context-Aware Enhancement Prompts**
+The enhancement process uses a fundamentally different approach than initial extraction:
+
+**Initial Extraction Prompt:**
+```
+<INSTRUCTION>Only use these json fields:rootcause, weakness, impact, vector, attacker, product, version, component</INSTRUCTION>
+[CVE Description]
+```
+
+**Enhancement Prompt:**
+```
+<INSTRUCTION>
+You are tasked with REVIEWING and ENHANCING existing keyphrases for a CVE description.
+
+EXISTING KEYPHRASES:
+{
+  "rootcause": "",
+  "weakness": "SQL injection",
+  "impact": "",
+  "vector": "",
+  "attacker": "",
+  "product": "",
+  "version": "",
+  "component": ""
+}
+
+CVE DESCRIPTION:
+[Original vulnerability description]
+
+Your job is to:
+1. Review the existing keyphrases below against the CVE description
+2. Add any missing keyphrases that can be extracted from the description
+3. Correct any incorrect or incomplete keyphrases
+4. Ensure all relevant fields are populated when information is available
+</INSTRUCTION>
+```
+
+#### 4. **Smart Result Selection**
+- Compares original result (e.g., 1 keyphrase) with enhanced result (e.g., 4 keyphrases)
+- Automatically selects the better result (more non-empty fields)
+- Saves the improved version immediately
+
+### Quality Enhancement Features
+
+#### **Automatic Processing Mode** (Default)
+- Runs during normal `keyphraseExtract.py` execution
+- No additional commands needed
+- Real-time enhancement for every insufficient result
+- Transparent logging shows when enhancement is triggered
+
+#### **Reprocessing Mode** 
+```bash
+# Improve existing files with poor keyphrase quality
+python keyphraseExtract.py --reprocess-insufficient
+```
+- Scans all existing keyphrase files
+- Identifies files with 0 or 1 keyphrases
+- Applies enhancement prompts to improve them
+- Only overwrites files if enhancement actually improves the result
+
+### Example Enhancement Flow
+
+**Before Enhancement:**
+```json
+{
+  "rootcause": "",
+  "weakness": "SQL injection",
+  "impact": "",
+  "vector": "",
+  "attacker": "",
+  "product": "",
+  "version": "",
+  "component": ""
+}
+```
+
+**After Enhancement:**
+```json
+{
+  "rootcause": "improper input validation",
+  "weakness": "SQL injection",
+  "impact": "execute arbitrary SQL commands",
+  "vector": "web application",
+  "attacker": "remote authenticated attacker",
+  "product": "MyApp",
+  "version": "version 2.1",
+  "component": "admin panel"
+}
+```
+
+### Benefits
+
+1. **Immediate Quality Improvement**: Issues are detected and fixed during initial processing
+2. **Context-Aware Enhancement**: Model sees existing work and builds upon it rather than starting from scratch
+3. **No Data Loss**: Preserves good existing keyphrases while adding missing ones
+4. **Transparent Process**: Clear logging shows exactly when and how enhancement occurs
+5. **Efficiency**: Only triggers enhancement when actually needed (insufficient results)
+
 ## Processing Pipeline
 
 The system follows a 4-stage pipeline with professional Python scripts:
@@ -332,9 +459,12 @@ The system follows a 4-stage pipeline with professional Python scripts:
 - Object-oriented design with comprehensive error handling
 - Intelligent data source detection and column mapping
 - Dual API support with automatic fallback mechanisms
+- **Real-time Quality Assessment**: `check_keyphrase_quality()` method analyzes extracted keyphrases immediately
+- **Automatic Enhancement**: Triggers enhancement prompts when primary model produces insufficient results
+- **Context-Aware Enhancement**: Uses `create_enhancement_prompt()` to show existing keyphrases and request improvements
 - Timeout protection (5-minute limit per API call)
 - Enhanced retry logic for connection issues, server errors, and rate limits
-- Progress tracking with detailed statistics
+- Progress tracking with detailed statistics including keyphrase quality metrics
 
 **Key Features**:
 - Filters invalid descriptions (empty, "DO NOT USE", duplicates)
@@ -347,6 +477,9 @@ The system follows a 4-stage pipeline with professional Python scripts:
 
 **CVEKeyphraseValidator & CVEKeyphraseChecker Classes**:
 - Professional validation with comprehensive checks
+- **Quality-Based Classification**: Uses same `check_keyphrase_quality()` logic as main extractor
+- **Empty Keyphrase Detection**: Identifies files where all 8 keyphrase fields are empty
+- **Single Keyphrase Detection**: Identifies files with only 1 non-empty keyphrase field
 - Duplicate detection using MD5 content hashing
 - Missing keyphrases identification across entire repository
 - Invalid file isolation and detailed error reporting
@@ -354,9 +487,11 @@ The system follows a 4-stage pipeline with professional Python scripts:
 **Validation Features**:
 - JSON structure validation
 - Required field verification
+- **Keyphrase Quality Assessment**: Counts non-empty fields and flags insufficient content
 - Content consistency checks
 - Automated file organization (moves invalid files)
-- Comprehensive reporting system
+- **Separate Quality Reports**: Creates `empty_keyphrases.txt` and `single_keyphrases.txt`
+- Comprehensive reporting system with quality statistics
 
 ### 3. Data Consolidation (`merge_jsons2all.py`)
 
@@ -418,6 +553,8 @@ The final consolidated JSON follows this standardized structure:
 | `CVE-*_error.json` | Individual error details | `keyphraseExtract.py` | `logs/error_logs/` |
 | `keyphrases_already.csv` | Processing status tracking | `keyphraseExtract.py` | `logs/` |
 | `missing_keyphrases.txt` | Files needing keyphrases | `keyphraseExtract_check.py` | `logs/` |
+| `empty_keyphrases.txt` | Files with all empty keyphrase fields | `keyphraseExtract_check.py` | `logs/` |
+| `single_keyphrases.txt` | Files with only 1 non-empty keyphrase field | `keyphraseExtract_check.py` | `logs/` |
 | `impact_validation_errors.log` | Data consistency issues | `merge_jsons2all.py` | `CVEs/all/` |
 | `failed_cves.txt` | Failed CVE processing list | `keyphraseExtract.py` | Root directory |
 
@@ -427,8 +564,10 @@ The final consolidated JSON follows this standardized structure:
 ```
 2025-07-04 12:00:00,123 - INFO - Using new VertexAI API
 2025-07-04 12:00:01,456 - INFO - Found 24807 new CVEs to process
-2025-07-04 12:00:05,789 - INFO - Processed CVE-2024-45774 and saved results (API: new, model: primary)
-2025-07-04 12:00:08,012 - WARNING - Connection/timeout error: API call timed out. Sleeping for 30 seconds...
+2025-07-04 12:00:05,789 - INFO - CVE-2024-45774: Primary model produced 1 keyphrases. Retrying with fallback model for enhancement.
+2025-07-04 12:00:08,012 - INFO - CVE-2024-45774: Fallback enhancement produced 4 keyphrases (improved from 1)
+2025-07-04 12:00:08,345 - INFO - Processed CVE-2024-45774 (4 keyphrases: rootcause, weakness, impact, product)
+2025-07-04 12:00:12,678 - WARNING - Connection/timeout error: API call timed out. Sleeping for 30 seconds...
 2025-07-04 12:00:45,234 - INFO - Progress: 100/24807 CVEs processed (98 successful, 95 via primary, 3 via fallback)
 ```
 
@@ -436,7 +575,10 @@ The final consolidated JSON follows this standardized structure:
 ```
 2025-07-04 12:30:00,123 - INFO - Starting keyphrase file validation
 2025-07-04 12:30:01,456 - INFO - Found 122 keyphrase files to validate
-2025-07-04 12:30:02,789 - INFO - Validation Summary: 122 valid, 0 invalid files
+2025-07-04 12:30:02,789 - INFO - Validation Summary: 110 valid, 12 invalid files
+2025-07-04 12:30:02,890 - INFO - Zero-byte files: 0, Empty keyphrase files: 3, Single keyphrase files: 9
+2025-07-04 12:30:03,123 - INFO - Empty keyphrase files report saved to logs/empty_keyphrases.txt
+2025-07-04 12:30:03,234 - INFO - Single keyphrase files report saved to logs/single_keyphrases.txt
 2025-07-04 12:30:05,012 - INFO - Found 15 files missing keyphrases section
 ```
 
